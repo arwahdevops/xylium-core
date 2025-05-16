@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/valyala/fasthttp"
@@ -28,10 +29,7 @@ func (c *Context) BindAndValidate(out interface{}) error {
 		if vErrs, ok := err.(validator.ValidationErrors); ok {
 			errFields := make(map[string]string)
 			for _, fe := range vErrs {
-				// Provide a more user-friendly field name if possible (e.g., JSON tag)
 				fieldName := fe.Field()
-				// One could potentially inspect struct tags (e.g., `json`) for a better name.
-				// For now, fe.Field() is used.
 				errFields[fieldName] = fmt.Sprintf("validation failed on '%s' tag", fe.Tag())
 				if fe.Param() != "" {
 					errFields[fieldName] += fmt.Sprintf(" (param: %s)", fe.Param())
@@ -39,63 +37,46 @@ func (c *Context) BindAndValidate(out interface{}) error {
 			}
 			return NewHTTPError(StatusBadRequest, map[string]interface{}{"message": "Validation failed", "details": errFields}).WithInternal(err)
 		}
-		// Non-validator.ValidationErrors error
 		return NewHTTPError(StatusBadRequest, "Validation processing error").WithInternal(err)
 	}
 	return nil
 }
 
 // Bind attempts to bind request data to the `out` interface.
-// - For GET/DELETE: tries to bind from query parameters.
-// - For POST/PUT/PATCH etc.:
-//   - application/json: unmarshals JSON body.
-//   - application/xml, text/xml: unmarshals XML body.
-//   - application/x-www-form-urlencoded, multipart/form-data: binds from form data.
-// If Content-Length is 0 for methods other than GET/DELETE, it does nothing and returns nil.
-// Returns an *HTTPError if binding fails or content type is unsupported.
 func (c *Context) Bind(out interface{}) error {
-	// If Content-Length is 0 and method is not GET/DELETE, nothing to bind from body.
 	if c.Ctx.Request.Header.ContentLength() == 0 &&
 		c.Method() != MethodGet && c.Method() != MethodDelete && c.Method() != MethodHead {
-		return nil // Nothing to bind
+		return nil
 	}
 
 	contentType := c.ContentType()
 
 	if c.Method() == MethodGet || c.Method() == MethodDelete || c.Method() == MethodHead {
-		// For GET/DELETE/HEAD, try to bind from query parameters.
-		// Initialize queryArgs if not already done.
 		if c.queryArgs == nil {
 			c.queryArgs = c.Ctx.QueryArgs()
 		}
 		return c.bindDataFromArgs(out, c.queryArgs, "query", "query")
 	}
 
-	// For other methods, bind based on Content-Type from the body or form.
 	switch {
 	case strings.HasPrefix(contentType, "application/json"):
-		if len(c.Body()) == 0 { return nil } // No body to unmarshal
+		if len(c.Body()) == 0 { return nil }
 		if err := json.Unmarshal(c.Body(), out); err != nil {
 			return NewHTTPError(StatusBadRequest, "Invalid JSON data").WithInternal(err)
 		}
 	case strings.HasPrefix(contentType, "application/xml"), strings.HasPrefix(contentType, "text/xml"):
-		if len(c.Body()) == 0 { return nil } // No body to unmarshal
+		if len(c.Body()) == 0 { return nil }
 		if err := xml.Unmarshal(c.Body(), out); err != nil {
 			return NewHTTPError(StatusBadRequest, "Invalid XML data").WithInternal(err)
 		}
 	case strings.HasPrefix(contentType, "application/x-www-form-urlencoded"),
 		strings.HasPrefix(contentType, "multipart/form-data"):
-		// Initialize formArgs if not already done. For multipart, Ctx.PostArgs() handles it.
 		if c.formArgs == nil {
-			// This ensures form data is parsed if it hasn't been already.
-			// For multipart, MultipartForm() might need to be called first by the user if they need files,
-			// but PostArgs() will still provide non-file fields.
-			_ = c.Ctx.PostArgs() // The actual args are stored in c.Ctx
+			_ = c.Ctx.PostArgs()
 			c.formArgs = c.Ctx.PostArgs()
 		}
 		return c.bindDataFromArgs(out, c.formArgs, "form", "form")
 	default:
-		// If there's a body but content type is not supported for binding
 		if len(c.Body()) > 0 {
 			return NewHTTPError(StatusUnsupportedMediaType, "Unsupported Content-Type for binding: "+contentType)
 		}
@@ -103,15 +84,11 @@ func (c *Context) Bind(out interface{}) error {
 	return nil
 }
 
-// bindDataFromArgs attempts to bind data from fasthttp.Args (query or form) into `out`.
-// `source` is "query" or "form" for error messages.
-// `tagKey` is the struct tag to look for (e.g., "query" or "form").
 func (c *Context) bindDataFromArgs(out interface{}, args *fasthttp.Args, source string, tagKey string) error {
 	if args == nil {
-		return nil // No arguments to bind
+		return nil
 	}
 
-	// Handle map[string]string directly
 	if m, ok := out.(*map[string]string); ok {
 		if *m == nil {
 			*m = make(map[string]string)
@@ -121,11 +98,9 @@ func (c *Context) bindDataFromArgs(out interface{}, args *fasthttp.Args, source 
 		})
 		return nil
 	}
-    
-	// Handle binding to struct fields
+
 	val := reflect.ValueOf(out)
 	if val.Kind() != reflect.Ptr || val.Elem().Kind() != reflect.Struct {
-		// Only try to bind to map[string]string or pointer to struct
 		if val.Kind() == reflect.Struct {
 			return NewHTTPError(StatusInternalServerError,
 				fmt.Sprintf("Binding from %s to non-pointer struct %T is not supported. Pass a pointer.", source, out))
@@ -136,108 +111,157 @@ func (c *Context) bindDataFromArgs(out interface{}, args *fasthttp.Args, source 
 
 	elem := val.Elem()
 	typ := elem.Type()
-
 	numFields := elem.NumField()
-	boundFields := 0
 
 	for i := 0; i < numFields; i++ {
 		field := typ.Field(i)
 		fieldVal := elem.Field(i)
 
 		if !fieldVal.CanSet() {
-			continue // Skip unexported or unsettable fields
+			continue
 		}
 
 		tagValue := field.Tag.Get(tagKey)
-		if tagValue == "" || tagValue == "-" { // No tag or explicitly ignored
-			// Fallback to field name if no tag for query/form
-			// For JSON/XML, exact match or tag is usually required by unmarshallers.
-			// Here, for form/query, we can be a bit more lenient or strict as per design.
-			// Let's use field name as a fallback if no tag.
+		if tagValue == "" || tagValue == "-" {
 			tagValue = field.Name
 		}
-		
-		formFieldName := strings.Split(tagValue, ",")[0] // Get the name part of the tag (e.g., "name" from "name,omitempty")
+
+		formFieldName := strings.Split(tagValue, ",")[0]
 		if formFieldName == "" {
 			continue
 		}
 
-		argValueBytes := args.Peek(formFieldName)
-		if argValueBytes == nil {
-			// Field not present in args, try next field
-			continue
+		var argValues []string
+		if fieldVal.Kind() == reflect.Slice {
+			byteValues := args.PeekMulti(formFieldName)
+			if len(byteValues) == 0 {
+				continue
+			}
+			argValues = make([]string, len(byteValues))
+			for i, bv := range byteValues {
+				argValues[i] = string(bv)
+			}
+		} else {
+			argValueBytes := args.Peek(formFieldName)
+			if argValueBytes == nil {
+				continue
+			}
+			argValues = []string{string(argValueBytes)}
 		}
-		argValueStr := string(argValueBytes)
 
-		// Set field value
-		if err := c.setStructField(fieldVal, argValueStr); err != nil {
+		if err := c.setStructField(fieldVal, field.Type, argValues); err != nil {
 			return NewHTTPError(StatusBadRequest,
 				fmt.Sprintf("Error binding %s parameter '%s' to field '%s': %v", source, formFieldName, field.Name, err)).WithInternal(err)
 		}
-		boundFields++
 	}
-
-	// Optional: If no fields were bound and args were present, one might consider it an error or a specific case.
-	// For now, if nothing matches, it's not an error.
-	// if args.Len() > 0 && boundFields == 0 {
-	//  return NewHTTPError(StatusBadRequest, fmt.Sprintf("No %s parameters found to bind to %T", source, out))
-	// }
-
 	return nil
 }
 
-// setStructField converts string value to the type of the field and sets it.
-// Supports basic types: string, int, int64, bool, float64.
-func (c *Context) setStructField(fieldVal reflect.Value, strValue string) error {
-	switch fieldVal.Kind() {
+func (c *Context) setStructField(fieldVal reflect.Value, fieldType reflect.Type, strValues []string) error {
+	if len(strValues) == 0 {
+		return nil
+	}
+
+	if fieldType.Kind() == reflect.Ptr {
+		if fieldVal.IsNil() {
+			fieldVal.Set(reflect.New(fieldType.Elem()))
+		}
+		fieldVal = fieldVal.Elem()
+		fieldType = fieldType.Elem()
+	}
+
+	if fieldType.Kind() == reflect.Slice {
+		sliceElemType := fieldType.Elem()
+		newSlice := reflect.MakeSlice(fieldType, len(strValues), len(strValues))
+		for i, strVal := range strValues {
+			if err := c.setScalarField(newSlice.Index(i), sliceElemType, strVal); err != nil {
+				return fmt.Errorf("error setting slice element %d: %w", i, err)
+			}
+		}
+		fieldVal.Set(newSlice)
+		return nil
+	}
+	return c.setScalarField(fieldVal, fieldType, strValues[0])
+}
+
+func (c *Context) setScalarField(fieldVal reflect.Value, fieldType reflect.Type, strValue string) error {
+	if fieldType == reflect.TypeOf(time.Time{}) {
+		// PERBAIKAN: Deklarasi parsedTime dipindahkan ke dalam if CanSet
+		// atau pastikan error handlingnya benar jika tidak bisa di-set.
+		// Untuk kasus ini, jika tidak bisa di-set, kita tidak perlu parse.
+		if !fieldVal.CanSet() {
+			return fmt.Errorf("field cannot be set (type: %s)", fieldType.String())
+		}
+
+		parsedTime, err := time.Parse(time.RFC3339, strValue)
+		if err != nil {
+			parsedTime, errDate := time.Parse("2006-01-02", strValue) // Shadowing parsedTime tidak masalah di sini
+			if errDate != nil {
+				return fmt.Errorf("cannot parse '%s' as time.Time (tried RFC3339 and YYYY-MM-DD): %v / %v", strValue, err, errDate)
+			}
+			// Jika errDate nil, maka parsing tanggal berhasil.
+			fieldVal.Set(reflect.ValueOf(parsedTime)) // Gunakan parsedTime yang berhasil dari parsing tanggal
+			return nil
+		}
+		// Jika err (dari RFC3339) nil, maka parsing RFC3339 berhasil
+		fieldVal.Set(reflect.ValueOf(parsedTime))
+		return nil
+	}
+
+	switch fieldType.Kind() {
 	case reflect.String:
 		fieldVal.SetString(strValue)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		if strValue == "" { // Handle empty string for numeric types as 0 or error
-			// Depending on desired behavior, either set to zero or return error.
-			// For now, let's try to parse, strconv.ParseInt will error on "" for base 10.
-			// If you want "" to be 0, handle it: fieldVal.SetInt(0); return nil
+		if strValue == "" {
+			fieldVal.SetInt(0)
+			return nil
 		}
-		i, err := strconv.ParseInt(strValue, 10, 64)
+		i, err := strconv.ParseInt(strValue, 10, fieldType.Bits())
 		if err != nil {
 			return fmt.Errorf("cannot parse '%s' as integer: %w", strValue, err)
 		}
 		fieldVal.SetInt(i)
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		if strValue == "" {
-			// similar handling as Int
+			fieldVal.SetUint(0)
+			return nil
 		}
-		u, err := strconv.ParseUint(strValue, 10, 64)
+		u, err := strconv.ParseUint(strValue, 10, fieldType.Bits())
 		if err != nil {
 			return fmt.Errorf("cannot parse '%s' as unsigned integer: %w", strValue, err)
 		}
 		fieldVal.SetUint(u)
 	case reflect.Bool:
+		if strValue == "" {
+			fieldVal.SetBool(false)
+			return nil
+		}
 		b, err := strconv.ParseBool(strValue)
 		if err != nil {
-			// Handle common boolean string representations if strconv.ParseBool is too strict
 			lowerVal := strings.ToLower(strValue)
 			if lowerVal == "on" || lowerVal == "yes" {
 				b = true
-				err = nil
 			} else if lowerVal == "off" || lowerVal == "no" {
 				b = false
-				err = nil
+			} else if i, numErr := strconv.ParseInt(lowerVal, 10, 8); numErr == nil {
+				b = (i == 1)
 			} else {
 				return fmt.Errorf("cannot parse '%s' as boolean: %w", strValue, err)
 			}
 		}
 		fieldVal.SetBool(b)
 	case reflect.Float32, reflect.Float64:
-		f, err := strconv.ParseFloat(strValue, fieldVal.Type().Bits())
+		if strValue == "" {
+			fieldVal.SetFloat(0)
+			return nil
+		}
+		f, err := strconv.ParseFloat(strValue, fieldType.Bits())
 		if err != nil {
 			return fmt.Errorf("cannot parse '%s' as float: %w", strValue, err)
 		}
 		fieldVal.SetFloat(f)
-	// TODO: Add support for slices (e.g., ?ids=1&ids=2&ids=3)
-	// TODO: Add support for time.Time
 	default:
-		return fmt.Errorf("unsupported field type %s for form/query binding", fieldVal.Kind())
+		return fmt.Errorf("unsupported scalar field type %s for form/query binding", fieldType.Kind())
 	}
 	return nil
 }
