@@ -1,9 +1,8 @@
-module github.com/arwahdevops/xylium-core/xylium
+module github.com/arwahdevops/xylium-core
 
 go 1.24.2
 
 require (
-	github.com/arwahdevops/xylium v1.0.0
 	github.com/go-playground/validator/v10 v10.26.0
 	github.com/valyala/fasthttp v1.62.0
 )

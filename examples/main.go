@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/arwahdevops/xylium/src/xylium"
+	"github.com/arwahdevops/xylium-core/xylium"
 )
 
 // --- Model Data untuk Task ---
