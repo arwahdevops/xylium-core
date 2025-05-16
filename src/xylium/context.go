@@ -46,23 +46,28 @@ type Context struct {
 	queryArgs *fasthttp.Args
 	formArgs  *fasthttp.Args
 
+	// responseOnce ensures that certain response-related initializations
+	// (like setting a default Content-Type) happen only once.
 	responseOnce sync.Once
 }
 
 // reset prepares the Context instance for reuse.
 func (c *Context) reset() {
 	c.Ctx = nil
+	// Clear Params map
 	for k := range c.Params {
 		delete(c.Params, k)
 	}
+	// Reset handlers slice without reallocating if capacity is sufficient
 	c.handlers = c.handlers[:0]
 	c.index = -1
+	// Clear store map
 	for k := range c.store {
 		delete(c.store, k)
 	}
 	c.router = nil
-	c.queryArgs = nil
-	c.formArgs = nil
+	c.queryArgs = nil // Will be re-populated from Ctx if needed
+	c.formArgs = nil  // Will be re-populated from Ctx if needed
 	c.responseOnce = sync.Once{}
 }
 
@@ -81,28 +86,12 @@ func (c *Context) setRouter(r *Router) {
 }
 
 // ResponseCommitted checks if the response header has already been sent.
+// This method relies on fasthttp's internal state.
 func (c *Context) ResponseCommitted() bool {
 	if c.Ctx == nil {
 		return false
 	}
-
-	// PENGGANTI SEMENTARA (kurang akurat tapi membuat kompilasi jalan):
-	// Coba kembalikan ke c.Ctx.ResponseWritten() jika Anda sudah menjalankan
-	// langkah diagnosis fasthttp versi dan go clean.
-	// return c.Ctx.ResponseWritten()
-
-	// Logika pengganti sementara yang lebih baik:
-	sc := c.Ctx.Response.StatusCode()
-	bodyWritten := len(c.Ctx.Response.Body()) > 0
-	headerContentLengthSet := c.Ctx.Response.Header.ContentLength() >= 0
-
-	// PERBAIKAN SINTAKS: Kondisi untuk SwitchingProtocols diperbaiki.
-	// Jika status code adalah 0 (default fasthttp sebelum diset), itu belum committed.
-	// Jika sc adalah SwitchingProtocols, ResponseWritten() akan false, jadi kita tiru itu.
-	if sc == fasthttp.StatusSwitchingProtocols {
-		return false // Dalam kasus 101, ResponseWritten() biasanya false meskipun header awal sudah terkirim.
-	}
-	// Untuk status lain, anggap "committed" jika status sudah diset (bukan 0),
-	// atau body ditulis, atau Content-Length diset.
-	return sc != 0 || bodyWritten || headerContentLengthSet
+	// According to fasthttp v1.62.0 documentation,
+	// ResponseWritten() is a method of *fasthttp.RequestCtx.
+	return c.Ctx.ResponseWritten()
 }
