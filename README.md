@@ -50,7 +50,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/arwahdevops/xylium-core/xylium"
+	"github.com/arwahdevops/xylium-core/src/xylium"
 )
 
 func main() {
