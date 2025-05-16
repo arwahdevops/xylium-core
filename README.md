@@ -34,9 +34,9 @@ Xylium offers an expressive and familiar API (inspired by popular frameworks lik
 ### Installation
 
 ```bash
-go get -u github.com/arwahdevops/xylium/src/xylium
+go get -u github.com/arwahdevops/xylium/v2
 # Or if you are using a different module structure:
-# go get -u github.com/arwahdevops/xylium
+# go get -u github.com/arwahdevops/xylium/v2
 ```
 
 ### Simple Usage Example
