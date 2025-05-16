@@ -34,9 +34,9 @@ Xylium offers an expressive and familiar API (inspired by popular frameworks lik
 ### Installation
 
 ```bash
-go get -u github.com/arwahdevops/xylium
+go get -u github.com/arwahdevops/xylium-core
 # Or if you are using a different module structure:
-# go get -u github.com/arwahdevops/xylium
+# go get -u github.com/arwahdevops/xylium-core
 ```
 
 ### Simple Usage Example
@@ -50,7 +50,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/arwahdevops/xylium/src/xylium"
+	"github.com/arwahdevops/xylium-core/xylium"
 )
 
 func main() {

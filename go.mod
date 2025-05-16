@@ -1,4 +1,4 @@
-module github.com/arwahdevops/xyliu
+module github.com/arwahdevops/xylium-core/xylium
 
 go 1.24.2
 
