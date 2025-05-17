@@ -13,3 +13,6 @@ type Middleware func(next HandlerFunc) HandlerFunc
 type Logger interface {
 	Printf(format string, args ...interface{})
 }
+
+// M is a shorthand for map[string]interface{}, useful for creating JSON objects.
+type M map[string]interface{}

@@ -1,9 +1,12 @@
 package xylium
 
 import (
-	"log" // For default logger implementation
+	// "context" // PERBAIKAN: Impor ini tidak digunakan
+	"log"
 	"net"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/valyala/fasthttp"
@@ -31,13 +34,13 @@ type ServerConfig struct {
 	KeepHijackedConns             bool
 	CloseOnShutdown               bool
 	StreamRequestBody             bool
-	Logger                        Logger // Uses xylium.Logger interface
+	Logger                        Logger
 	ConnState                     func(conn net.Conn, state fasthttp.ConnState)
+	ShutdownTimeout               time.Duration
 }
 
 // DefaultServerConfig returns a ServerConfig with sensible default values.
 func DefaultServerConfig() ServerConfig {
-	// stdlib log.Logger satisfies the xylium.Logger interface.
 	defaultAppLogger := log.New(os.Stderr, "[xyliumSrvDefault] ", log.LstdFlags)
 	return ServerConfig{
 		Name:                 "xylium Server",
@@ -47,15 +50,12 @@ func DefaultServerConfig() ServerConfig {
 		MaxRequestBodySize:   4 * 1024 * 1024, // 4MB
 		Concurrency:          fasthttp.DefaultConcurrency,
 		ReduceMemoryUsage:    false,
-		Logger:               defaultAppLogger, // Provide default xylium.Logger
+		Logger:               defaultAppLogger,
 		CloseOnShutdown:      true,
+		ShutdownTimeout:      15 * time.Second,
 	}
 }
 
-// loggerAdapter adapts a xylium.Logger (which only requires Printf)
-// to fasthttp.Logger interface (which is identical for Printf).
-// This is mostly for type compatibility if a user provides a custom Logger
-// that isn't already a fasthttp.Logger.
 type loggerAdapter struct {
 	internalLogger Logger
 }
@@ -64,20 +64,16 @@ func (la *loggerAdapter) Printf(format string, args ...interface{}) {
 	la.internalLogger.Printf(format, args...)
 }
 
-// buildFasthttpServer creates a fasthttp.Server instance from the Router's configuration.
 func (r *Router) buildFasthttpServer() *fasthttp.Server {
 	var fasthttpCompatibleLogger fasthttp.Logger
 	if r.serverConfig.Logger != nil {
 		if fhl, ok := r.serverConfig.Logger.(fasthttp.Logger); ok {
-			// If the provided logger is already a fasthttp.Logger, use it directly.
 			fasthttpCompatibleLogger = fhl
 		} else {
-			// Otherwise, wrap it with our adapter.
 			fasthttpCompatibleLogger = &loggerAdapter{internalLogger: r.serverConfig.Logger}
 		}
 	}
 
-	// All fasthttp.Server settings are populated from r.serverConfig
 	return &fasthttp.Server{
 		Handler:                       r.Handler,
 		Name:                          r.serverConfig.Name,
@@ -100,28 +96,151 @@ func (r *Router) buildFasthttpServer() *fasthttp.Server {
 		KeepHijackedConns:             r.serverConfig.KeepHijackedConns,
 		CloseOnShutdown:               r.serverConfig.CloseOnShutdown,
 		StreamRequestBody:             r.serverConfig.StreamRequestBody,
-		Logger:                        fasthttpCompatibleLogger, // Use the (potentially adapted) logger
+		Logger:                        fasthttpCompatibleLogger,
 		ConnState:                     r.serverConfig.ConnState,
 	}
 }
 
-// ListenAndServe starts the HTTP server on the given address.
 func (r *Router) ListenAndServe(addr string) error {
 	server := r.buildFasthttpServer()
-	r.Logger().Printf("xylium server listening on %s", addr) // r.Logger() is xylium.Logger
+	r.Logger().Printf("xylium server listening on %s", addr)
 	return server.ListenAndServe(addr)
 }
 
-// ListenAndServeTLS starts the HTTPS server with certificate and key files.
 func (r *Router) ListenAndServeTLS(addr, certFile, keyFile string) error {
 	server := r.buildFasthttpServer()
 	r.Logger().Printf("xylium HTTPS server listening on %s", addr)
 	return server.ListenAndServeTLS(addr, certFile, keyFile)
 }
 
-// ListenAndServeTLSEmbed starts the HTTPS server with embedded certificate and key data.
 func (r *Router) ListenAndServeTLSEmbed(addr string, certData, keyData []byte) error {
 	server := r.buildFasthttpServer()
 	r.Logger().Printf("xylium HTTPS server (embedded cert) listening on %s", addr)
 	return server.ListenAndServeTLSEmbed(addr, certData, keyData)
+}
+
+func (r *Router) ListenAndServeGracefully(addr string) error {
+	server := r.buildFasthttpServer()
+	serverErrors := make(chan error, 1)
+
+	go func() {
+		r.Logger().Printf("xylium server listening gracefully on %s", addr)
+		serverErrors <- server.ListenAndServe(addr)
+	}()
+
+	shutdownChan := make(chan os.Signal, 1)
+	signal.Notify(shutdownChan, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case err := <-serverErrors:
+		return err
+	case sig := <-shutdownChan:
+		r.Logger().Printf("Shutdown signal received: %s. Starting graceful shutdown...", sig)
+		shutdownTimeout := r.serverConfig.ShutdownTimeout
+		if shutdownTimeout <= 0 {
+			shutdownTimeout = 15 * time.Second
+			r.Logger().Printf("Using default shutdown timeout: %s", shutdownTimeout)
+		}
+		
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			if err := server.Shutdown(); err != nil {
+				r.Logger().Printf("Error during server shutdown: %v", err)
+			}
+		}()
+
+		select {
+		case <-done:
+			r.Logger().Printf("Server gracefully stopped.")
+		case <-time.After(shutdownTimeout):
+			r.Logger().Printf("Graceful shutdown timed out after %s.", shutdownTimeout)
+			// Tidak ada server.ForceShutdown() di fasthttp.
+			// server.Shutdown() yang dipanggil di goroutine akan terus berjalan atau selesai.
+			// Program akan exit setelah ini.
+		}
+		return nil
+	}
+}
+
+func (r *Router) ListenAndServeTLSGracefully(addr, certFile, keyFile string) error {
+	server := r.buildFasthttpServer()
+	serverErrors := make(chan error, 1)
+
+	go func() {
+		r.Logger().Printf("xylium HTTPS server listening gracefully on %s", addr)
+		serverErrors <- server.ListenAndServeTLS(addr, certFile, keyFile)
+	}()
+	
+	shutdownChan := make(chan os.Signal, 1)
+	signal.Notify(shutdownChan, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case err := <-serverErrors:
+		return err
+	case sig := <-shutdownChan:
+		r.Logger().Printf("Shutdown signal received: %s. Starting graceful shutdown...", sig)
+		shutdownTimeout := r.serverConfig.ShutdownTimeout
+		if shutdownTimeout <= 0 {
+			shutdownTimeout = 15 * time.Second
+			r.Logger().Printf("Using default shutdown timeout: %s", shutdownTimeout)
+		}
+		
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			if err := server.Shutdown(); err != nil {
+				r.Logger().Printf("Error during server shutdown: %v", err)
+			}
+		}()
+
+		select {
+		case <-done:
+			r.Logger().Printf("Server gracefully stopped.")
+		case <-time.After(shutdownTimeout):
+			r.Logger().Printf("Graceful shutdown timed out after %s.", shutdownTimeout)
+		}
+		return nil
+	}
+}
+
+func (r *Router) ListenAndServeTLSEmbedGracefully(addr string, certData, keyData []byte) error {
+    server := r.buildFasthttpServer()
+	serverErrors := make(chan error, 1)
+
+	go func() {
+		r.Logger().Printf("xylium HTTPS server (embedded cert) listening gracefully on %s", addr)
+		serverErrors <- server.ListenAndServeTLSEmbed(addr, certData, keyData)
+	}()
+	
+	shutdownChan := make(chan os.Signal, 1)
+	signal.Notify(shutdownChan, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case err := <-serverErrors:
+		return err
+	case sig := <-shutdownChan:
+		r.Logger().Printf("Shutdown signal received: %s. Starting graceful shutdown...", sig)
+		shutdownTimeout := r.serverConfig.ShutdownTimeout
+		if shutdownTimeout <= 0 {
+			shutdownTimeout = 15 * time.Second
+			r.Logger().Printf("Using default shutdown timeout: %s", shutdownTimeout)
+		}
+		
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			if err := server.Shutdown(); err != nil {
+				r.Logger().Printf("Error during server shutdown: %v", err)
+			}
+		}()
+
+		select {
+		case <-done:
+			r.Logger().Printf("Server gracefully stopped.")
+		case <-time.After(shutdownTimeout):
+			r.Logger().Printf("Graceful shutdown timed out after %s.", shutdownTimeout)
+		}
+		return nil
+	}
 }

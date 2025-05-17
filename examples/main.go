@@ -1,7 +1,7 @@
 package main
 
 import (
-	"encoding/json" // Diperlukan untuk unmarshal manual jika ingin cek keberadaan field JSON
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/arwahdevops/xylium-core/src/xylium"
+	"github.com/go-playground/validator/v10" // PERBAIKAN: Impor validator untuk ValidationErrors
 )
 
 // --- Model Data untuk Task ---
@@ -19,6 +20,7 @@ type Task struct {
 	Description string     `json:"description,omitempty"`
 	Completed   bool       `json:"completed"`
 	DueDate     *time.Time `json:"due_date,omitempty" validate:"omitempty,gt"`
+	Tags        []string   `json:"tags,omitempty" validate:"omitempty,dive,min=2"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
 }
@@ -54,9 +56,6 @@ func requestLoggerMiddleware(logger xylium.Logger) xylium.Middleware {
 				statusCode,
 				latency,
 			)
-			if err != nil {
-				logger.Printf("Error processing request %s %s: %v", c.Method(), c.Path(), err)
-			}
 			return err
 		}
 	}
@@ -78,10 +77,10 @@ func simpleAuthMiddleware(validAPIKey string) xylium.Middleware {
 	}
 }
 
-var startupTime time.Time // <<< PERBAIKAN: Deklarasi startupTime di scope package
+var startupTime time.Time
 
 func main() {
-	startupTime = time.Now().UTC() // <<< PERBAIKAN: Inisialisasi startupTime
+	startupTime = time.Now().UTC()
 
 	appLogger := log.New(os.Stdout, "[TaskAPIApp] ", log.LstdFlags|log.Lshortfile)
 
@@ -90,6 +89,7 @@ func main() {
 	serverCfg.Name = "TaskManagementAPI/1.0"
 	serverCfg.ReadTimeout = 30 * time.Second
 	serverCfg.WriteTimeout = 30 * time.Second
+	serverCfg.ShutdownTimeout = 20 * time.Second
 
 	router := xylium.NewWithConfig(serverCfg)
 	frameworkLogger := router.Logger()
@@ -108,9 +108,26 @@ func main() {
 		healthStatus := map[string]interface{}{
 			"status":    "healthy",
 			"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
-			"uptime":    time.Since(startupTime).String(), // <<< PERBAIKAN: Sekarang startupTime terdefinisi
+			"uptime":    time.Since(startupTime).String(),
 		}
 		return c.JSON(http.StatusOK, healthStatus)
+	})
+
+	type FilterRequest struct {
+		StartDate *time.Time `query:"startDate"`
+		EndDate   *time.Time `query:"endDate"`
+		Status    []string   `query:"status" validate:"omitempty,dive,oneof=pending completed failed"`
+		Priorities []int     `query:"priority" validate:"omitempty,dive,min=1,max=5"`
+	}
+	router.GET("/filter-tasks", func(c *xylium.Context) error {
+		var req FilterRequest
+		if err := c.BindAndValidate(&req); err != nil {
+			return err
+		}
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"message": "Filter parameters received",
+			"filters": req,
+		})
 	})
 
 	apiV1Group := router.Group("/api/v1")
@@ -132,14 +149,15 @@ func main() {
 			var req struct {
 				Title       string     `json:"title" validate:"required,min=3,max=200"`
 				Description string     `json:"description,omitempty"`
-				DueDate     *time.Time `json:"due_date,omitempty" validate:"omitempty"`
+				DueDate     *time.Time `json:"due_date,omitempty"`
+				Tags        []string   `json:"tags,omitempty" validate:"omitempty,dive,min=2"`
 			}
 			if err := c.BindAndValidate(&req); err != nil {
 				return err
 			}
-			if req.DueDate != nil && req.DueDate.Before(time.Now().UTC()) {
+			if req.DueDate != nil && req.DueDate.Before(time.Now().UTC().Truncate(24*time.Hour)) {
 				return xylium.NewHTTPError(http.StatusBadRequest,
-					map[string]string{"due_date": "Due date must be in the future."})
+					map[string]string{"due_date": "Due date must be today or in the future."})
 			}
 			now := time.Now().UTC()
 			newTask := Task{
@@ -148,6 +166,7 @@ func main() {
 				Description: req.Description,
 				Completed:   false,
 				DueDate:     req.DueDate,
+				Tags:        req.Tags,
 				CreatedAt:   now,
 				UpdatedAt:   now,
 			}
@@ -172,18 +191,13 @@ func main() {
 		tasksAPI.PUT("/:id", func(c *xylium.Context) error {
 			taskID := c.Param("id")
 
-			// Untuk PUT, kita perlu tahu field mana yang benar-benar dikirim oleh klien
-			// untuk membedakan antara "tidak dikirim" dan "dikirim sebagai null".
-			// Cara paling robust adalah dengan unmarshal ke map[string]interface{} terlebih dahulu
-			// atau menggunakan struct dengan pointer ke semua field yang bisa null/opsional.
-			// Pendekatan saat ini dengan struct pointer sudah cukup baik untuk field opsional.
-
-			// Pertama, unmarshal ke map untuk memeriksa keberadaan field 'due_date' secara eksplisit
 			var rawRequest map[string]json.RawMessage
-			if err := json.Unmarshal(c.Body(), &rawRequest); err != nil {
+			bodyBytes := c.Body()
+			if err := json.Unmarshal(bodyBytes, &rawRequest); err != nil {
 				return xylium.NewHTTPError(http.StatusBadRequest, "Invalid JSON body").WithInternal(err)
 			}
 			_, dueDateInRequest := rawRequest["due_date"]
+			_, tagsInRequest := rawRequest["tags"]
 
 
 			tasksDBLock.Lock()
@@ -195,34 +209,35 @@ func main() {
 					fmt.Sprintf("Task with ID '%s' not found to update", taskID))
 			}
 
-			// Struct untuk binding data yang sebenarnya, setelah kita tahu field mana yang ada
 			var req struct {
 				Title       *string    `json:"title,omitempty" validate:"omitempty,min=3,max=200"`
 				Description *string    `json:"description,omitempty"`
 				Completed   *bool      `json:"completed,omitempty"`
 				DueDate     *time.Time `json:"due_date,omitempty"`
+				Tags        *[]string  `json:"tags,omitempty" validate:"omitempty,dive,min=2"`
 			}
 
-			// Bind ke struct req. Ini akan mengisi field yang ada di JSON.
-			// Jika due_date ada dan null di JSON, req.DueDate akan menjadi nil.
-			// Jika due_date tidak ada di JSON, req.DueDate juga akan menjadi nil.
-			// Kita membedakannya dengan flag dueDateInRequest.
-			if err := json.Unmarshal(c.Body(), &req); err != nil { // Unmarshal lagi ke struct
-				// Sebenarnya Bind() akan melakukan ini, tapi kita sudah unmarshal ke map.
-				// Untuk konsistensi, kita bisa panggil BindAndValidate saja, tapi itu akan membaca body lagi.
-				// Pilihan lain: Gunakan `json.NewDecoder(bytes.NewReader(c.Body())).Decode(&req)`
-				// Untuk contoh ini, kita re-unmarshal ke struct.
-				// Atau lebih baik: Panggil BindAndValidate SETELAH cek manual.
-				// Mari kita sederhanakan untuk saat ini:
-				// Panggil Bind, lalu cek due_date_in_request.
-				// Untuk lebih baik, Bind harus bisa memberi tahu apakah field ada.
-				// Kita pakai pendekatan `BindAndValidate` lalu cek `dueDateInRequest`.
-				// Jika BindAndValidate dipanggil, ia akan membaca body. Jadi rawRequest harus di-unmarshal dari body yang sama.
-				// Ini menjadi sedikit rumit jika ingin efisien dan robust.
-				// Mari kita stick dengan BindAndValidate dulu, lalu cek `dueDateInRequest` dari map sebelumnya.
-				if errBind := c.BindAndValidate(&req); errBind != nil {
-					return errBind
+			if err := json.Unmarshal(bodyBytes, &req); err != nil {
+				return xylium.NewHTTPError(http.StatusBadRequest, "Invalid JSON for update").WithInternal(err)
+			}
+
+			// PERBAIKAN: Gunakan instance validator dari xylium atau import validator
+			currentValidator := xylium.GetValidator() // Atau bisa juga instance validator.New() jika tidak ada dependensi ke xylium
+			if err := currentValidator.Struct(&req); err != nil {
+				// PERBAIKAN: Gunakan validator.ValidationErrors dari paket validator yang diimpor
+				if vErrs, ok := err.(validator.ValidationErrors); ok {
+					errFields := make(map[string]string)
+					for _, fe := range vErrs {
+						errFields[fe.Field()] = fmt.Sprintf("validation failed on '%s' tag", fe.Tag())
+						if fe.Param() != "" {
+							errFields[fe.Field()] += fmt.Sprintf(" (param: %s)", fe.Param())
+						}
+					}
+					// PERBAIKAN: Gunakan konstanta status dari paket xylium
+					return xylium.NewHTTPError(xylium.StatusBadRequest, map[string]interface{}{"message": "Validation failed", "details": errFields}).WithInternal(err)
 				}
+				// PERBAIKAN: Gunakan konstanta status dari paket xylium
+				return xylium.NewHTTPError(xylium.StatusBadRequest, "Validation processing error").WithInternal(err)
 			}
 
 
@@ -240,20 +255,30 @@ func main() {
 				changed = true
 			}
 
-			// <<< PERBAIKAN LOGIKA DueDate untuk PUT >>>
-			if dueDateInRequest { // Hanya proses jika 'due_date' ada di payload JSON
-				if req.DueDate == nil { // Klien mengirim "due_date": null
+			if dueDateInRequest {
+				if req.DueDate == nil {
 					existingTask.DueDate = nil
 					changed = true
-				} else { // Klien mengirim "due_date": "some-date"
-					if req.DueDate.Before(time.Now().UTC()) {
+				} else {
+					if req.DueDate.Before(time.Now().UTC().Truncate(24*time.Hour)) {
 						return xylium.NewHTTPError(http.StatusBadRequest,
-							map[string]string{"due_date": "Due date must be in the future if provided."})
+							map[string]string{"due_date": "Due date must be today or in the future if provided."})
 					}
 					existingTask.DueDate = req.DueDate
 					changed = true
 				}
-			} // Jika dueDateInRequest false, kita tidak menyentuh existingTask.DueDate
+			}
+
+			if tagsInRequest {
+				if req.Tags == nil {
+					existingTask.Tags = nil
+					changed = true
+				} else {
+					existingTask.Tags = *req.Tags
+					changed = true
+				}
+			}
+
 
 			if changed {
 				existingTask.UpdatedAt = time.Now().UTC()
@@ -298,7 +323,9 @@ func main() {
 
 	listenAddr := ":8080"
 	appLogger.Printf("Task API server starting. Listening on http://localhost%s", listenAddr)
-	if err := router.ListenAndServe(listenAddr); err != nil {
-		appLogger.Fatalf("FATAL: Failed to start API server: %v", err)
+
+	if err := router.ListenAndServeGracefully(listenAddr); err != nil {
+		appLogger.Fatalf("FATAL: API server error: %v", err)
 	}
+	appLogger.Println("Task API server has shut down gracefully.")
 }
