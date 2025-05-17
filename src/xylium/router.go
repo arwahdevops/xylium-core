@@ -70,10 +70,10 @@ func New() *Router {
 }
 
 // NewWithConfig creates a new Router instance with the provided ServerConfig.
-// The router's operating mode (`instanceMode`) is determined by calling `xylium.Mode()`
+// The router's operating mode (`instanceMode`) is determined by calling `Mode()`
 // at the time of creation, reflecting the current global Xylium operating mode.
 // This function also notifies the Xylium mode management system that a router instance
-// has been created, which is used by `xylium.SetMode()` to issue warnings if the global
+// has been created, which is used by `SetMode()` to issue warnings if the global
 // mode is changed after router instantiation.
 //
 // Parameters:
@@ -85,7 +85,7 @@ func New() *Router {
 func NewWithConfig(config ServerConfig) *Router {
 	// Determine the effective global Xylium mode at the moment this router is created.
 	// This mode will be adopted by this specific router instance.
-	effectiveMode := Mode() // Calls xylium.Mode() from src/xylium/mode.go
+	effectiveMode := Mode() // Calls Mode() from src/xylium/mode.go
 
 	routerInstance := &Router{
 		tree:             NewTree(),                // Initialize a new radix tree for routing.
@@ -95,7 +95,7 @@ func NewWithConfig(config ServerConfig) *Router {
 	}
 
 	// Notify the global Xylium mode management system that a router instance has now been created.
-	// This allows `xylium.SetMode()` to log a warning if the global mode is changed
+	// This allows `SetMode()` to log a warning if the global mode is changed
 	// *after* this point, as existing routers (like this one) won't pick up that change.
 	notifyRouterCreated() // From src/xylium/mode.go
 
@@ -247,7 +247,7 @@ func (r *Router) Handler(originalFasthttpCtx *fasthttp.RequestCtx) {
 					currentLogger.Printf("Error (GlobalErrorHandler is nil): %v for %s %s. Sending fallback 500.", errHandler, c.Method(), c.Path())
 					c.Ctx.Response.SetStatusCode(StatusInternalServerError)
 					c.Ctx.Response.SetBodyString("Internal Server Error")
-					c.Ctx.Response.Header.SetContentType("text/plain; charset=utf-8") // Corrected: was utf--8
+					c.Ctx.Response.Header.SetContentType("text/plain; charset=utf-8")
 				}
 			} else {
 				// If the response has already been committed, we can't send a new error response.
@@ -379,6 +379,7 @@ func (r *Router) ServeFiles(urlPathPrefix string, fileSystemRoot string) {
 		PathNotFound: func(originalFasthttpCtx *fasthttp.RequestCtx) {
 			// This custom callback is invoked by fasthttp.FS if a requested file is not found within its Root.
 			// We send a JSON 404 response to maintain API consistency.
+			// Note: M, NewHTTPError, StatusNotFound are from the current 'xylium' package.
 			errorMsg := M{"error": "The requested static asset was not found."}
 			httpErr := NewHTTPError(StatusNotFound, errorMsg)
 
@@ -388,7 +389,7 @@ func (r *Router) ServeFiles(urlPathPrefix string, fileSystemRoot string) {
 			if err := json.NewEncoder(originalFasthttpCtx.Response.BodyWriter()).Encode(httpErr.Message); err != nil {
 				logMsg := fmt.Sprintf(
 					"Xylium ServeFiles: CRITICAL - Error encoding JSON for PathNotFound callback (URI: %s): %v. Client received 404 but body might be malformed.",
-					originalFasthttpCtx.RequestURI(), err,
+					string(originalFasthttpCtx.RequestURI()), err, // Convert byte slice URI to string
 				)
 				if frameworkLogger != nil {
 					frameworkLogger.Printf(logMsg)
@@ -402,7 +403,8 @@ func (r *Router) ServeFiles(urlPathPrefix string, fileSystemRoot string) {
 	fileServerHandler := fs.NewRequestHandler()
 
 	// Register a GET route in Xylium to handle requests for static files.
-	r.GET(routePath, func(c *xylium.Context) error {
+	// Note: c is *Context from the current 'xylium' package.
+	r.GET(routePath, func(c *Context) error {
 		// Extract the requested file's subpath from the catch-all route parameter.
 		requestedFileSubPath := c.Param(catchAllParamName)
 
@@ -413,9 +415,9 @@ func (r *Router) ServeFiles(urlPathPrefix string, fileSystemRoot string) {
 		pathForFasthttpFS = filepath.Clean(pathForFasthttpFS)
 		// Ensure it still starts with "/" after cleaning, as Clean might remove it if path becomes ".".
 		if !strings.HasPrefix(pathForFasthttpFS, "/") && pathForFasthttpFS != "." { // "." becomes "/"
-		    pathForFasthttpFS = "/" + pathForFasthttpFS
+			pathForFasthttpFS = "/" + pathForFasthttpFS
 		} else if pathForFasthttpFS == "." { // if subpath was empty or just slashes, Clean results in "."
-		    pathForFasthttpFS = "/" // Serve index file from root of fs.Root
+			pathForFasthttpFS = "/" // Serve index file from root of fs.Root
 		}
 
 		// Temporarily set the RequestURI on the underlying fasthttp.RequestCtx.

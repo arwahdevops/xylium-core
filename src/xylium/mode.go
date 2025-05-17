@@ -32,12 +32,13 @@ var (
 // The mode can be explicitly set or overridden later by calling xylium.SetMode().
 func init() {
 	initialMode := os.Getenv(EnvXyliumMode)
-	resolvedMode := ReleaseMode // Default to ReleaseMode
+
+	resolvedMode := DebugMode // Default to DebugMode
 
 	if initialMode != "" {
 		switch initialMode {
 		case DebugMode, TestMode, ReleaseMode:
-			resolvedMode = initialMode
+			resolvedMode = initialMode // Override default if ENV var is set and valid
 		default:
 			// Use standard log as the framework's logger might not be available yet.
 			log.Printf("[XYLIUM-WARN] Invalid initial mode '%s' specified in %s. Defaulting to '%s'. Valid modes: %s, %s, %s.\n",
@@ -76,20 +77,17 @@ func SetMode(modeValue string) {
 			// This log can use the standard 'log' package as it's a framework-level setting.
 			log.Printf("[XYLIUM-INFO] Xylium global operating mode changed from '%s' to '%s'.\n", currentGlobalMode, modeValue)
 			currentGlobalMode = modeValue
-		} else if !modeInitialized {
-			// If modeInitialized was somehow false and SetMode is the first to set it.
-			currentGlobalMode = modeValue
-			log.Printf("[XYLIUM-INFO] Xylium global operating mode initialized to '%s'.\n", currentGlobalMode)
 		}
-
+		// Note: modeInitialized is set in init() and should remain true.
+		// If SetMode is called, it's either confirming or changing an already initialized mode.
 
 		// Warning if mode is set after a router instance has already been created.
 		// The `routerInstanceCreated` flag would be set by `xylium.New` or `xylium.NewWithConfig`.
 		if routerInstanceCreated {
 			log.Printf("[XYLIUM-WARN] SetMode(\"%s\") called after a Xylium router instance has been created. Existing router instances will not adopt this new mode. New router instances will use this mode: '%s'.\n", modeValue, currentGlobalMode)
 		}
+		modeInitialized = true // Ensure it's marked as initialized if somehow it wasn't (though init should handle it).
 	}
-	modeInitialized = true // Ensure it's marked as initialized.
 }
 
 // Mode returns the current global operating mode of Xylium.
@@ -101,8 +99,9 @@ func Mode() string {
 	if !modeInitialized {
 		// This case should ideally not be reached if init() runs or SetMode() is called.
 		// Fallback to ensure a mode is always returned.
-		log.Println("[XYLIUM-WARN] Mode() called before mode was explicitly initialized or set; defaulting to ReleaseMode for this call.")
-		return ReleaseMode
+		// PERUBAHAN DI SINI: Fallback juga ke DebugMode jika belum terinisialisasi
+		log.Println("[XYLIUM-WARN] Mode() called before mode was explicitly initialized or set; defaulting to DebugMode for this call.")
+		return DebugMode
 	}
 	return currentGlobalMode
 }
