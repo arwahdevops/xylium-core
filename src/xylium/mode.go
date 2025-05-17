@@ -3,84 +3,114 @@ package xylium
 
 import (
 	"fmt"
-	"log" // For internal warning logging if necessary
+	"log" // Standard log for internal framework messages.
 	"os"
+	"sync" // For protecting currentGlobalMode if accessed concurrently (though SetMode is usually early).
 )
 
 const (
 	// DebugMode indicates Xylium's debug mode.
-	// Enables more verbose logging and potentially detailed error information.
 	DebugMode string = "debug"
 	// TestMode indicates Xylium's test mode.
-	// Useful when running test suites, may suppress certain outputs.
 	TestMode string = "test"
 	// ReleaseMode indicates Xylium's release (production) mode.
-	// This is the default mode, featuring minimal logging and full optimizations.
 	ReleaseMode string = "release"
 )
 
-// EnvXyliumMode is the name of the environment variable used to set Xylium's_Preferring "operating mode".
-// "Xylium's mode" is a bit informal._ operating mode.
+// EnvXyliumMode is the name of the environment variable used to set Xylium's operating mode.
 const EnvXyliumMode = "XYLIUM_MODE"
 
-// currentGlobalMode stores the active global operating mode.
-// It defaults to ReleaseMode.
 var (
-	currentGlobalMode = ReleaseMode
-	// disableModeChange is a flag to indicate if the global mode has been "locked"
-	// (typically after the first router instance is initialized).
-	// Subsequent calls to SetMode will trigger a warning.
-	disableModeChange bool = false
+	currentGlobalMode     string
+	currentGlobalModeLock sync.RWMutex
+	modeInitialized       bool // Flag to indicate if initial mode setting (from ENV or default) has occurred.
+	routerInstanceCreated bool // Flag to indicate if a router instance has been made.
 )
 
 // init function is called when the xylium package is first imported.
-// It reads the XYLIUM_MODE environment variable to set the initial global mode.
-// This allows setting the mode via ENV before any application code (like SetMode() or New()) runs.
+// It performs an *initial* read of the XYLIUM_MODE environment variable.
+// The mode can be explicitly set or overridden later by calling xylium.SetMode().
 func init() {
-	envMode := os.Getenv(EnvXyliumMode)
-	if envMode != "" {
-		switch envMode {
+	initialMode := os.Getenv(EnvXyliumMode)
+
+	resolvedMode := DebugMode // Default to DebugMode
+
+	if initialMode != "" {
+		switch initialMode {
 		case DebugMode, TestMode, ReleaseMode:
-			currentGlobalMode = envMode
-			// For initial setup, a log message here might be too early if no logger is configured yet.
-			// If needed, a very basic log.Printf could be used, or this info could be logged by the first router.
-			// log.Printf("[XYLIUM-INFO] Global mode set to '%s' from environment variable %s\n", currentGlobalMode, EnvXyliumMode)
+			resolvedMode = initialMode // Override default if ENV var is set and valid
 		default:
 			// Use standard log as the framework's logger might not be available yet.
-			log.Printf("[XYLIUM-WARN] Invalid mode '%s' specified in %s. Defaulting to '%s'. Valid modes: %s, %s, %s.\n",
-				envMode, EnvXyliumMode, currentGlobalMode, DebugMode, TestMode, ReleaseMode)
+			log.Printf("[XYLIUM-WARN] Invalid initial mode '%s' specified in %s. Defaulting to '%s'. Valid modes: %s, %s, %s.\n",
+				initialMode, EnvXyliumMode, resolvedMode, DebugMode, TestMode, ReleaseMode)
 		}
 	}
+	// Set the initial global mode. No lock needed here as init() is single-threaded per package.
+	currentGlobalMode = resolvedMode
+	modeInitialized = true
+	// Log initial discovery (optional, can be verbose if Xylium is just a library)
+	// log.Printf("[XYLIUM-INFO] Initial global mode detected as '%s' (from ENV or default).\n", currentGlobalMode)
 }
 
 // SetMode sets Xylium's global operating mode.
-// This function should ideally be called *before* creating any Router instances
-// (e.g., Xylium.New() or Xylium.NewWithConfig()).
-// Calling it after the first router has been initialized will print a warning,
-// as not all components might pick up this mode change retroactively.
-// Valid modes are xylium.DebugMode, xylium.TestMode, and xylium.ReleaseMode.
+// This function is the definitive way for an application to set the desired mode,
+// typically called early in the application's main function, especially after loading
+// configurations like .env files.
+// If called after a Xylium router instance has been created, a warning will be logged,
+// as router instances adopt the mode prevalent at their creation time.
 func SetMode(modeValue string) {
-	if disableModeChange {
-		// Use standard log for this global setting warning.
-		log.Printf("[XYLIUM-WARN] SetMode(\"%s\") called after a Xylium router instance has been initialized. The new mode may not be fully effective for existing or future instances if they rely on the global mode at their initialization time.\n", modeValue)
-	}
+	currentGlobalModeLock.Lock()
+	defer currentGlobalModeLock.Unlock()
 
+	validMode := false
 	switch modeValue {
 	case DebugMode, TestMode, ReleaseMode:
-		currentGlobalMode = modeValue
+		validMode = true
 	default:
-		panic(fmt.Sprintf("xylium: invalid mode: '%s'. Use xylium.DebugMode, xylium.TestMode, or xylium.ReleaseMode.", modeValue))
+		// Panic for invalid mode to ensure correct configuration.
+		panic(fmt.Sprintf("xylium: invalid mode '%s' provided to SetMode. Use xylium.DebugMode, xylium.TestMode, or xylium.ReleaseMode.", modeValue))
+	}
+
+	if validMode {
+		if currentGlobalMode != modeValue {
+			// Log the change if it's different from the current mode.
+			// This log can use the standard 'log' package as it's a framework-level setting.
+			log.Printf("[XYLIUM-INFO] Xylium global operating mode changed from '%s' to '%s'.\n", currentGlobalMode, modeValue)
+			currentGlobalMode = modeValue
+		}
+		// Note: modeInitialized is set in init() and should remain true.
+		// If SetMode is called, it's either confirming or changing an already initialized mode.
+
+		// Warning if mode is set after a router instance has already been created.
+		// The `routerInstanceCreated` flag would be set by `xylium.New` or `xylium.NewWithConfig`.
+		if routerInstanceCreated {
+			log.Printf("[XYLIUM-WARN] SetMode(\"%s\") called after a Xylium router instance has been created. Existing router instances will not adopt this new mode. New router instances will use this mode: '%s'.\n", modeValue, currentGlobalMode)
+		}
+		modeInitialized = true // Ensure it's marked as initialized if somehow it wasn't (though init should handle it).
 	}
 }
 
 // Mode returns the current global operating mode of Xylium.
-// Applications can use this to implement conditional behavior.
+// Applications and Xylium components (like the Router) should use this function
+// to get the effective operating mode.
 func Mode() string {
+	currentGlobalModeLock.RLock()
+	defer currentGlobalModeLock.RUnlock()
+	if !modeInitialized {
+		// This case should ideally not be reached if init() runs or SetMode() is called.
+		// Fallback to ensure a mode is always returned.
+		// PERUBAHAN DI SINI: Fallback juga ke DebugMode jika belum terinisialisasi
+		log.Println("[XYLIUM-WARN] Mode() called before mode was explicitly initialized or set; defaulting to DebugMode for this call.")
+		return DebugMode
+	}
 	return currentGlobalMode
 }
 
-// lockModeChanges is an internal function called by the Router's initialization
-// to signal that subsequent global mode changes should be logged with a warning.
-func lockModeChanges() {
-	disableModeChange = true
+// notifyRouterCreated is an internal function called by Router's initialization
+// to signal that at least one router instance exists. This is used by SetMode
+// to issue a warning if the mode is changed after router creation.
+func notifyRouterCreated() {
+	currentGlobalModeLock.Lock() // Protect write to routerInstanceCreated
+	routerInstanceCreated = true
+	currentGlobalModeLock.Unlock()
 }
