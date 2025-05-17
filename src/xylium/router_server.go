@@ -68,26 +68,24 @@ type ServerConfig struct {
 
 // DefaultServerConfig returns a ServerConfig with sensible default values.
 func DefaultServerConfig() ServerConfig {
-	// Create a default logger instance using Go's standard log package.
 	defaultAppLogger := log.New(os.Stderr, "[xyliumSrvDefault] ", log.LstdFlags)
 	return ServerConfig{
-		Name:                 "Xylium Server", // Default server name.
+		Name:                 "Xylium Server",
 		ReadTimeout:          60 * time.Second,
 		WriteTimeout:         60 * time.Second,
 		IdleTimeout:          120 * time.Second,
-		MaxRequestBodySize:   4 * 1024 * 1024, // 4MB default.
+		MaxRequestBodySize:   4 * 1024 * 1024,
 		Concurrency:          fasthttp.DefaultConcurrency,
 		ReduceMemoryUsage:    false,
-		Logger:               defaultAppLogger, // Use the default xylium.Logger.
+		Logger:               defaultAppLogger,
 		CloseOnShutdown:      true,
-		ShutdownTimeout:      15 * time.Second, // Default graceful shutdown timeout.
+		ShutdownTimeout:      15 * time.Second,
 	}
 }
 
 // loggerAdapter adapts a xylium.Logger to fasthttp.Logger interface.
-// fasthttp.Logger has the same Printf method signature as xylium.Logger.
 type loggerAdapter struct {
-	internalLogger Logger // The xylium.Logger to adapt.
+	internalLogger Logger
 }
 
 // Printf implements the fasthttp.Logger interface.
@@ -95,7 +93,6 @@ func (la *loggerAdapter) Printf(format string, args ...interface{}) {
 	if la.internalLogger != nil {
 		la.internalLogger.Printf(format, args...)
 	} else {
-		// Fallback if internalLogger is somehow nil.
 		log.Printf(format, args...)
 	}
 }
@@ -103,24 +100,20 @@ func (la *loggerAdapter) Printf(format string, args ...interface{}) {
 // buildFasthttpServer constructs a new fasthttp.Server instance based on the
 // Router's ServerConfig.
 func (r *Router) buildFasthttpServer() *fasthttp.Server {
-	var fasthttpCompatibleLogger fasthttp.Logger // fasthttp.Server expects a fasthttp.Logger.
+	var fasthttpCompatibleLogger fasthttp.Logger
 
 	if r.serverConfig.Logger != nil {
-		// If the provided xylium.Logger already implements fasthttp.Logger, use it directly.
-		// This is possible if the user provides a fasthttp.Logger instance.
 		if fhl, ok := r.serverConfig.Logger.(fasthttp.Logger); ok {
 			fasthttpCompatibleLogger = fhl
 		} else {
-			// Otherwise, wrap the xylium.Logger with the adapter.
 			fasthttpCompatibleLogger = &loggerAdapter{internalLogger: r.serverConfig.Logger}
 		}
 	} else {
-		// Fallback if no logger is configured at all (should be handled by DefaultServerConfig).
 		fasthttpCompatibleLogger = &loggerAdapter{internalLogger: log.New(os.Stderr, "[xyliumFasthttpFallback] ", log.LstdFlags)}
 	}
 
 	return &fasthttp.Server{
-		Handler:                       r.Handler, // The main Xylium request handler.
+		Handler:                       r.Handler,
 		Name:                          r.serverConfig.Name,
 		ReadTimeout:                   r.serverConfig.ReadTimeout,
 		WriteTimeout:                  r.serverConfig.WriteTimeout,
@@ -141,7 +134,7 @@ func (r *Router) buildFasthttpServer() *fasthttp.Server {
 		KeepHijackedConns:             r.serverConfig.KeepHijackedConns,
 		CloseOnShutdown:               r.serverConfig.CloseOnShutdown,
 		StreamRequestBody:             r.serverConfig.StreamRequestBody,
-		Logger:                        fasthttpCompatibleLogger, // Use the adapted or direct fasthttp.Logger.
+		Logger:                        fasthttpCompatibleLogger,
 		ConnState:                     r.serverConfig.ConnState,
 	}
 }
@@ -150,7 +143,7 @@ func (r *Router) buildFasthttpServer() *fasthttp.Server {
 // It logs registered routes if the router is in DebugMode.
 func (r *Router) ListenAndServe(addr string) error {
 	if r.CurrentMode() == DebugMode && r.tree != nil && r.Logger() != nil {
-		r.tree.PrintRoutes(r.Logger()) // Log routes if in DebugMode.
+		r.tree.PrintRoutes(r.Logger())
 	}
 	server := r.buildFasthttpServer()
 	r.Logger().Printf("Xylium server listening on %s (Mode: %s)", addr, r.CurrentMode())
@@ -189,34 +182,27 @@ func (r *Router) ListenAndServeGracefully(addr string) error {
 		r.tree.PrintRoutes(r.Logger())
 	}
 	server := r.buildFasthttpServer()
-	serverErrors := make(chan error, 1) // Channel to capture errors from ListenAndServe.
+	serverErrors := make(chan error, 1)
 
-	// Start the server in a goroutine so it doesn't block.
 	go func() {
 		r.Logger().Printf("Xylium server listening gracefully on %s (Mode: %s)", addr, r.CurrentMode())
 		serverErrors <- server.ListenAndServe(addr)
 	}()
 
-	// Channel to listen for OS shutdown signals.
 	shutdownChan := make(chan os.Signal, 1)
 	signal.Notify(shutdownChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// Block until either a server error occurs or a shutdown signal is received.
 	select {
 	case err := <-serverErrors:
-		// If ListenAndServe fails (e.g., address already in use), return the error.
 		return err
 	case sig := <-shutdownChan:
 		r.Logger().Printf("Shutdown signal received: %s. Starting graceful shutdown...", sig)
 		shutdownTimeout := r.serverConfig.ShutdownTimeout
 		if shutdownTimeout <= 0 {
-			// Use a default shutdown timeout if not configured or invalid.
 			shutdownTimeout = 15 * time.Second
 			r.Logger().Printf("Using default shutdown timeout: %s", shutdownTimeout)
 		}
 
-		// Perform graceful shutdown in a new goroutine.
-		// server.Shutdown() will block until all connections are closed or the timeout is reached.
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
@@ -225,16 +211,13 @@ func (r *Router) ListenAndServeGracefully(addr string) error {
 			}
 		}()
 
-		// Wait for shutdown to complete or timeout.
 		select {
 		case <-done:
 			r.Logger().Printf("Server gracefully stopped.")
 		case <-time.After(shutdownTimeout):
 			r.Logger().Printf("Graceful shutdown timed out after %s.", shutdownTimeout)
-			// fasthttp's server.Shutdown() itself handles the timeout.
-			// The program will exit after this point if the main goroutine is this one.
 		}
-		return nil // Indicates the shutdown sequence was initiated.
+		return nil
 	}
 }
 
@@ -255,7 +238,6 @@ func (r *Router) ListenAndServeTLSGracefully(addr, certFile, keyFile string) err
 	shutdownChan := make(chan os.Signal, 1)
 	signal.Notify(shutdownChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// The graceful shutdown logic is identical to ListenAndServeGracefully.
 	select {
 	case err := <-serverErrors:
 		return err
@@ -285,15 +267,14 @@ func (r *Router) ListenAndServeTLSGracefully(addr, certFile, keyFile string) err
 	}
 }
 
-
 // ListenAndServeTLSEmbedGracefully starts an HTTPS server using embedded certificate/key data
 // and handles graceful shutdown.
 // It logs registered routes if the router is in DebugMode.
 func (r *Router) ListenAndServeTLSEmbedGracefully(addr string, certData, keyData []byte) error {
-    if r.CurrentMode() == DebugMode && r.tree != nil && r.Logger() != nil {
+	if r.CurrentMode() == DebugMode && r.tree != nil && r.Logger() != nil {
 		r.tree.PrintRoutes(r.Logger())
 	}
-    server := r.buildFasthttpServer()
+	server := r.buildFasthttpServer()
 	serverErrors := make(chan error, 1)
 
 	go func() {
@@ -304,7 +285,6 @@ func (r *Router) ListenAndServeTLSEmbedGracefully(addr string, certData, keyData
 	shutdownChan := make(chan os.Signal, 1)
 	signal.Notify(shutdownChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// The graceful shutdown logic is identical to ListenAndServeGracefully.
 	select {
 	case err := <-serverErrors:
 		return err
@@ -332,4 +312,14 @@ func (r *Router) ListenAndServeTLSEmbedGracefully(addr string, certData, keyData
 		}
 		return nil
 	}
+}
+
+// Start is a convenience alias for ListenAndServeGracefully.
+// It starts an HTTP server on the given network address and handles
+// OS signals (SIGINT, SIGTERM) for a graceful shutdown.
+// It logs registered routes if the router is in DebugMode.
+func (r *Router) Start(addr string) error {
+	// Pesan logging dan pencetakan rute akan ditangani oleh ListenAndServeGracefully.
+	// Tidak perlu duplikasi di sini.
+	return r.ListenAndServeGracefully(addr)
 }
