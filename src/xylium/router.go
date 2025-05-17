@@ -64,17 +64,15 @@ func (r *Router) Logger() Logger {
 
 // New creates a new Router instance with default server configuration.
 // The router's operating mode will be set based on the current global Xylium mode
-// at the time of this call.
+// at the time of this call (after attempting to update from environment variables).
 func New() *Router {
 	return NewWithConfig(DefaultServerConfig())
 }
 
 // NewWithConfig creates a new Router instance with the provided ServerConfig.
-// The router's operating mode (`instanceMode`) is determined by calling `Mode()`
-// at the time of creation, reflecting the current global Xylium operating mode.
-// This function also notifies the Xylium mode management system that a router instance
-// has been created, which is used by `SetMode()` to issue warnings if the global
-// mode is changed after router instantiation.
+// It first attempts to update Xylium's global operating mode from environment variables
+// (which might have been populated by a .env file loaded by the application).
+// Then, it adopts this effective global mode for the router instance.
 //
 // Parameters:
 //   - config: A ServerConfig struct containing settings for the underlying fasthttp server
@@ -83,8 +81,12 @@ func New() *Router {
 // Returns:
 //   - *Router: A pointer to the newly created Router instance.
 func NewWithConfig(config ServerConfig) *Router {
-	// Determine the effective global Xylium mode at the moment this router is created.
-	// This mode will be adopted by this specific router instance.
+	// Attempt to update Xylium's global mode from current environment variables.
+	// This allows .env files loaded by the application (before this call) to influence the mode.
+	// Explicit xylium.SetMode() calls by the application still take highest precedence.
+	updateGlobalModeFromEnvOnRouterInit() // From src/xylium/mode.go
+
+	// Adopt the (potentially updated) global Xylium mode for this router instance.
 	effectiveMode := Mode() // Calls Mode() from src/xylium/mode.go
 
 	routerInstance := &Router{
@@ -93,11 +95,6 @@ func NewWithConfig(config ServerConfig) *Router {
 		serverConfig:     config,                   // Store the provided server configuration.
 		instanceMode:     effectiveMode,            // Set this router's operating mode.
 	}
-
-	// Notify the global Xylium mode management system that a router instance has now been created.
-	// This allows `SetMode()` to log a warning if the global mode is changed
-	// *after* this point, as existing routers (like this one) won't pick up that change.
-	notifyRouterCreated() // From src/xylium/mode.go
 
 	// Set default handlers for common scenarios (404, 405, panics, global errors).
 	// These are defined in router_defaults.go and can be overridden by the user.
@@ -114,7 +111,8 @@ func NewWithConfig(config ServerConfig) *Router {
 
 	// Log the initialization of this router instance, including the operating mode it has adopted.
 	// This uses the router's own configured logger.
-	routerInstance.Logger().Printf("Xylium Router initialized (Adopting Mode: %s)", routerInstance.instanceMode)
+	// The modeSource variable is from the mode.go package and helps understand how the mode was determined.
+	routerInstance.Logger().Printf("Xylium Router initialized (Adopting Mode: %s, Determined By: %s)", routerInstance.instanceMode, modeSource)
 
 	return routerInstance
 }
@@ -349,7 +347,6 @@ func (r *Router) ServeFiles(urlPathPrefix string, fileSystemRoot string) {
 	catchAllParamName := "filepath" // This is the "name" part of `*name` in the route.
 
 	// Normalize the URL path prefix for routing tree registration.
-	// Xylium's tree expects prefixes like "static" or "group/subgroup" (without leading/trailing slashes if not root).
 	// An empty string "" signifies serving from the application root "/".
 	normalizedUrlPathPrefix := ""
 	if urlPathPrefix != "" && urlPathPrefix != "/" {
@@ -357,8 +354,6 @@ func (r *Router) ServeFiles(urlPathPrefix string, fileSystemRoot string) {
 	} // If urlPathPrefix is "/" or "" (empty), normalizedUrlPathPrefix remains "", treated as root.
 
 	// Construct the route path pattern for the radix tree.
-	// e.g., if normalizedUrlPathPrefix is "static", routePath becomes "/static/*filepath".
-	// if normalizedUrlPathPrefix is "", routePath becomes "/*filepath".
 	routePath := ""
 	if normalizedUrlPathPrefix == "" { // Serving from application root
 		routePath = "/*" + catchAllParamName
