@@ -3,6 +3,7 @@ package xylium
 import (
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -40,15 +41,20 @@ func (c *Context) BindAndValidate(out interface{}) error {
 				// Provide a user-friendly message for each validation failure.
 				// fe.Field() gives the struct field name. fe.Tag() gives the failed validation tag.
 				fieldName := fe.Field() // Or fe.Namespace() for full path in nested structs.
-				errFields[fieldName] = fmt.Sprintf("validation failed on '%s' tag", fe.Tag())
+				errMsg := fmt.Sprintf("validation failed on tag '%s'", fe.Tag())
 				if fe.Param() != "" { // Include validation parameter if present (e.g., min=3, max=10).
-					errFields[fieldName] += fmt.Sprintf(" (param: %s)", fe.Param())
+					errMsg += fmt.Sprintf(" (param: %s)", fe.Param())
 				}
+				// Include actual value if it's simple and not sensitive.
+				// Be cautious with logging actual values that might be sensitive.
+				// For now, fe.Value() is not included in client-facing message.
+				errFields[fieldName] = errMsg
 			}
 			// Return a 400 Bad Request with structured details of validation failures.
 			return NewHTTPError(StatusBadRequest, M{"message": "Validation failed.", "details": errFields}).WithInternal(err)
 		}
 		// If the error is not validator.ValidationErrors, it's an unexpected validation processing error.
+		// This could be due to invalid validator tags or other issues within the validator library.
 		return NewHTTPError(StatusBadRequest, "Validation processing error occurred.").WithInternal(err)
 	}
 	// Binding and validation successful.
@@ -67,15 +73,19 @@ func (c *Context) BindAndValidate(out interface{}) error {
 // with a request body). Returns nil if binding is successful or if there's no data to bind
 // (e.g., empty body for relevant methods, or GET request with no query params for struct fields).
 func (c *Context) Bind(out interface{}) error {
-	// If the request method typically doesn't have a body or if ContentLength is 0,
-	// and it's not a GET/DELETE/HEAD (which bind from query), there might be nothing to bind from body.
-	// However, GET/DELETE/HEAD will attempt to bind from query parameters.
-	// Form binding also handles empty bodies gracefully.
-	// JSON/XML binding will fail if body is empty and a struct is expected.
+	// Check if 'out' is a valid pointer type for binding.
+	rv := reflect.ValueOf(out)
+	if rv.Kind() != reflect.Ptr || rv.IsNil() {
+		return NewHTTPError(StatusInternalServerError,
+			fmt.Sprintf("Binding target 'out' must be a non-nil pointer, got %T", out)).WithInternal(errors.New("invalid binding target type"))
+	}
+
 	if c.Ctx.Request.Header.ContentLength() == 0 &&
 		c.Method() != MethodGet && c.Method() != MethodDelete && c.Method() != MethodHead {
-		// For methods like POST/PUT with no body, binding might be considered successful (nothing to bind).
-		// This allows optional bodies. If a body is required, validation on the struct should catch it.
+		// For methods like POST/PUT with no body, if 'out' is a struct, binding is successful (empty struct).
+		// If 'out' is *map[string]string, it remains initialized or nil.
+		// Validation on the struct (e.g., 'required' tags) should catch if body was mandatory.
+		// This allows optional request bodies.
 		return nil
 	}
 
@@ -93,17 +103,25 @@ func (c *Context) Bind(out interface{}) error {
 	// For other methods (POST, PUT, PATCH, etc.), bind based on Content-Type.
 	switch {
 	case strings.HasPrefix(contentType, "application/json"):
-		if len(c.Body()) == 0 { return nil } // Allow empty JSON body if not required by struct validation.
-		if err := json.Unmarshal(c.Body(), out); err != nil {
+		body := c.Body()
+		if len(body) == 0 { // Allow empty JSON body if not required by struct validation.
+			return nil
+		}
+		if err := json.Unmarshal(body, out); err != nil {
 			return NewHTTPError(StatusBadRequest, "Invalid JSON data provided in request body.").WithInternal(err)
 		}
 	case strings.HasPrefix(contentType, "application/xml"), strings.HasPrefix(contentType, "text/xml"):
-		if len(c.Body()) == 0 { return nil } // Allow empty XML body.
-		if err := xml.Unmarshal(c.Body(), out); err != nil {
+		body := c.Body()
+		if len(body) == 0 { // Allow empty XML body.
+			return nil
+		}
+		if err := xml.Unmarshal(body, out); err != nil {
 			return NewHTTPError(StatusBadRequest, "Invalid XML data provided in request body.").WithInternal(err)
 		}
 	case strings.HasPrefix(contentType, "application/x-www-form-urlencoded"),
 		strings.HasPrefix(contentType, "multipart/form-data"):
+		// Ensure PostArgs are parsed. fasthttp might parse them lazily.
+		// Accessing PostArgs() ensures they are available.
 		if c.formArgs == nil {
 			_ = c.Ctx.PostArgs() // Parse and cache form args if not already done.
 			c.formArgs = c.Ctx.PostArgs()
@@ -115,7 +133,8 @@ func (c *Context) Bind(out interface{}) error {
 		if len(c.Body()) > 0 {
 			return NewHTTPError(StatusUnsupportedMediaType, "Unsupported Content-Type for request body binding: "+contentType)
 		}
-		// If no body and Content-Type is not one of the above, binding is vacuously successful.
+		// If no body and Content-Type is not one of the above, binding is vacuously successful
+		// (e.g. an OPTIONS request with no body).
 	}
 	return nil
 }
@@ -125,7 +144,7 @@ func (c *Context) Bind(out interface{}) error {
 // - `source`: A descriptive string for the data source (e.g., "query parameters", "form data") for error messages.
 // - `tagKey`: The struct tag key to use for mapping (e.g., "query" for query params, "form" for form fields).
 func (c *Context) bindDataFromArgs(out interface{}, args *fasthttp.Args, source string, tagKey string) error {
-	if args == nil { // No arguments to bind from.
+	if args == nil || args.Len() == 0 { // No arguments to bind from.
 		return nil
 	}
 
@@ -141,18 +160,17 @@ func (c *Context) bindDataFromArgs(out interface{}, args *fasthttp.Args, source 
 	}
 
 	// Handle binding to a struct pointer.
-	val := reflect.ValueOf(out)
-	if val.Kind() != reflect.Ptr || val.Elem().Kind() != reflect.Struct {
-		if val.Kind() == reflect.Struct { // User passed a struct value instead of a pointer.
-			return NewHTTPError(StatusInternalServerError,
-				fmt.Sprintf("Binding from %s to non-pointer struct %T is not supported. Pass a pointer to the struct.", source, out))
-		}
-		// Binding to other types (e.g., *int, *string) from args is not directly supported by this generic binder.
+	val := reflect.ValueOf(out) // `val` is Ptr.
+	// We already checked in `Bind` that `out` is a non-nil pointer.
+	// Here we specifically check if it points to a struct.
+	elem := val.Elem() // The struct value itself.
+	if elem.Kind() != reflect.Struct {
+		// This case should be rare if `Bind` is used correctly, but good for defense.
+		// Example: User passes *int to Bind for form/query binding.
 		return NewHTTPError(StatusNotImplemented,
-			fmt.Sprintf("Binding from %s to type %T is not implemented. Supported types: *map[string]string, or a pointer to a struct.", source, out))
+			fmt.Sprintf("Binding from %s to type %T is not implemented. Supported types for %s: *map[string]string, or a pointer to a struct.", source, out, source))
 	}
 
-	elem := val.Elem() // The struct value itself.
 	typ := elem.Type()  // The struct type.
 	numFields := elem.NumField()
 
@@ -168,15 +186,21 @@ func (c *Context) bindDataFromArgs(out interface{}, args *fasthttp.Args, source 
 		// Determine the name of the form/query parameter from the struct tag.
 		// e.g., `form:"username"` or `query:"search_term"`
 		tagValue := field.Tag.Get(tagKey)
-		if tagValue == "" || tagValue == "-" { // If no tag or tag is "-", use field name as default.
-			tagValue = field.Name
+		formFieldName := "" // The actual parameter name to look for.
+		// TODO: Add support for tag options like ",omitempty" if needed in the future.
+		// For now, split just gets the name part.
+		if tagValue != "" && tagValue != "-" {
+			formFieldName = strings.Split(tagValue, ",")[0]
+		}
+		if formFieldName == "" { // If no tag or tag is "-", use field name as default (common convention).
+			// Consider if field name should be case-sensitive or converted (e.g. to snake_case).
+			// For now, using exact field name.
+			formFieldName = field.Name
+		}
+		if formFieldName == "-" { // Explicitly skip this field.
+		    continue
 		}
 
-		// The actual parameter name (e.g., "username" from `form:"username,omitempty"`)
-		formFieldName := strings.Split(tagValue, ",")[0]
-		if formFieldName == "" { // Skip if tag specifies an empty name after options.
-			continue
-		}
 
 		var argValues []string // Holds string values from form/query for this field.
 		if fieldVal.Kind() == reflect.Slice {
@@ -219,12 +243,25 @@ func (c *Context) setStructField(fieldVal reflect.Value, fieldType reflect.Type,
 	// If the field is a pointer type (e.g., *string, *int, *time.Time),
 	// allocate a new instance if it's nil, then operate on the pointed-to element.
 	if fieldType.Kind() == reflect.Ptr {
+		// For a pointer field, if the input string value is empty, we aim to keep the pointer nil
+		// for non-string types, to distinguish "not provided" or "provided as empty" from a zero value.
+		// This check applies when strValues has exactly one element (for scalar pointers).
+		// Slices of pointers are handled element by element in setScalarField.
+		if len(strValues) == 1 && strValues[0] == "" && fieldType.Elem().Kind() != reflect.String {
+			// If it's a pointer to a non-string type (numeric, bool, time) and the value is empty,
+			// treat as "not set" by keeping the pointer nil.
+			// This avoids errors from strconv.ParseX trying to parse "" for *int, *bool etc.
+			// For *string, an empty string is a valid value, so it will be handled by setScalarField.
+			return nil // Keep pointer as nil.
+		}
+
+
 		if fieldVal.IsNil() {
 			fieldVal.Set(reflect.New(fieldType.Elem())) // Allocate new element of pointed-to type.
 		}
 		// Dereference: subsequent operations apply to the value pointed to.
 		fieldVal = fieldVal.Elem()
-		fieldType = fieldType.Elem()
+		fieldType = fieldType.Elem() // Update fieldType to the element's type.
 	}
 
 	// If the field is a slice (e.g., []string, []int).
@@ -234,6 +271,7 @@ func (c *Context) setStructField(fieldVal reflect.Value, fieldType reflect.Type,
 		newSlice := reflect.MakeSlice(fieldType, len(strValues), len(strValues))
 		for i, strVal := range strValues {
 			// Set each element of the new slice by converting the string value.
+			// For slices of pointers (e.g. []*int), setScalarField will handle the pointer element.
 			if err := c.setScalarField(newSlice.Index(i), sliceElemType, strVal); err != nil {
 				return fmt.Errorf("error setting slice element %d from value '%s': %w", i, strVal, err)
 			}
@@ -250,12 +288,46 @@ func (c *Context) setStructField(fieldVal reflect.Value, fieldType reflect.Type,
 // setScalarField sets a scalar (non-slice) field (`fieldVal` of `fieldType`)
 // from a single string value (`strValue`). It handles common scalar types
 // like string, int, uint, bool, float, and time.Time.
+// It also handles pointer-to-scalar types if fieldType is a Ptr kind (e.g. for slice of pointers []*Type).
 func (c *Context) setScalarField(fieldVal reflect.Value, fieldType reflect.Type, strValue string) error {
+	// If the field itself (or slice element type) is a pointer (e.g. for slice of pointers []*int),
+	// allocate if nil and then set the element.
+	if fieldType.Kind() == reflect.Ptr {
+		// If strValue is empty for a non-string pointer element,
+		// leave this specific pointer element (e.g., in a slice) as nil.
+		if strValue == "" && fieldType.Elem().Kind() != reflect.String {
+			// fieldVal is the reflect.Value of the pointer itself (e.g., the *int in []*int).
+			// If it's settable (it should be, as it's an element of a slice we created)
+			// and currently nil, we just return, leaving it nil.
+			if fieldVal.CanSet() && fieldVal.IsNil() {
+				return nil // Leave this pointer element as nil.
+			}
+			// If it's not nil but strValue is empty, it's an odd case.
+			// For simplicity, we'll proceed, and it might error below if parsing "" fails for the elem type.
+			// Or, more strictly, one could argue it should be set to nil here too.
+			// However, the common case is a slice of nil pointers being populated.
+		}
+		// If the pointer is nil, create a new instance of the element type it points to.
+		if fieldVal.IsNil() {
+			fieldVal.Set(reflect.New(fieldType.Elem()))
+		}
+		// Dereference the pointer to set the actual value.
+		fieldVal = fieldVal.Elem()
+		fieldType = fieldType.Elem() // Update fieldType to the underlying element's type.
+	}
+
+
 	// Handle time.Time separately due to multiple supported parsing formats.
 	if fieldType == reflect.TypeOf(time.Time{}) {
-		if !fieldVal.CanSet() { // Should have been caught earlier, but defensive.
-			return fmt.Errorf("field of type time.Time cannot be set")
+		if !fieldVal.CanSet() {
+			return fmt.Errorf("field of type time.Time cannot be set (target not settable)")
 		}
+		if strValue == "" {
+			// For a direct time.Time field (not *time.Time), an empty string is a parsing error.
+			// *time.Time with empty string is handled above to remain nil.
+			return fmt.Errorf("cannot parse empty string as time.Time")
+		}
+
 		// Try parsing as RFC3339 format (e.g., "2006-01-02T15:04:05Z07:00").
 		parsedTimeRFC3339, errRFC3339 := time.Parse(time.RFC3339, strValue)
 		if errRFC3339 == nil {
@@ -277,20 +349,19 @@ func (c *Context) setScalarField(fieldVal reflect.Value, fieldType reflect.Type,
 	case reflect.String:
 		fieldVal.SetString(strValue)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		// For numeric types, if strValue is empty, set to 0 (Go's default for numbers).
 		if strValue == "" {
-			fieldVal.SetInt(0)
-			return nil
+			// For direct numeric fields (not pointers), an empty string is a parsing error.
+			// Pointers with empty strings are handled above to remain nil.
+			return fmt.Errorf("cannot parse empty string as integer (type %s)", fieldType.Kind())
 		}
-		i, err := strconv.ParseInt(strValue, 10, fieldType.Bits()) // Base 10, bit size from field type.
+		i, err := strconv.ParseInt(strValue, 10, fieldType.Bits())
 		if err != nil {
 			return fmt.Errorf("cannot parse '%s' as integer (type %s): %w", strValue, fieldType.Kind(), err)
 		}
 		fieldVal.SetInt(i)
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		if strValue == "" {
-			fieldVal.SetUint(0)
-			return nil
+			return fmt.Errorf("cannot parse empty string as unsigned integer (type %s)", fieldType.Kind())
 		}
 		u, err := strconv.ParseUint(strValue, 10, fieldType.Bits())
 		if err != nil {
@@ -298,32 +369,32 @@ func (c *Context) setScalarField(fieldVal reflect.Value, fieldType reflect.Type,
 		}
 		fieldVal.SetUint(u)
 	case reflect.Bool:
-		// For booleans, if strValue is empty, set to false (Go's default for bool).
 		if strValue == "" {
-			fieldVal.SetBool(false)
-			return nil
+			// For direct boolean fields, an empty string is a parsing error.
+			// Pointers with empty strings are handled above to remain nil.
+			return fmt.Errorf("cannot parse empty string as boolean")
 		}
-		// strconv.ParseBool handles "true", "false", "1", "0", "T", "F", etc.
-		b, err := strconv.ParseBool(strValue)
+		b, err := strconv.ParseBool(strValue) // Handles "true", "false", "1", "0", etc.
 		if err != nil {
-			// Add custom parsing for common checkbox values like "on", "yes", "off", "no".
+			// Add custom parsing for common checkbox/form values like "on", "yes", "off", "no".
 			lowerVal := strings.ToLower(strValue)
 			if lowerVal == "on" || lowerVal == "yes" {
 				b = true
+				err = nil // Clear previous error from strconv.ParseBool
 			} else if lowerVal == "off" || lowerVal == "no" {
 				b = false
-			} else {
-				// If still not parsable, return the original error from strconv.ParseBool.
+				err = nil // Clear previous error
+			}
+			if err != nil { // If still not parsable after custom checks
 				return fmt.Errorf("cannot parse '%s' as boolean: %w", strValue, err)
 			}
 		}
 		fieldVal.SetBool(b)
 	case reflect.Float32, reflect.Float64:
 		if strValue == "" {
-			fieldVal.SetFloat(0)
-			return nil
+			return fmt.Errorf("cannot parse empty string as float (type %s)", fieldType.Kind())
 		}
-		f, err := strconv.ParseFloat(strValue, fieldType.Bits()) // Bit size from field type.
+		f, err := strconv.ParseFloat(strValue, fieldType.Bits())
 		if err != nil {
 			return fmt.Errorf("cannot parse '%s' as float (type %s): %w", strValue, fieldType.Kind(), err)
 		}

@@ -17,7 +17,7 @@ import (
 // - For `xylium.HTTPError`:
 //   - Uses the error's specified HTTP status code and message for the client response.
 //   - Logs the error details, including any internal error (`httpErr.Internal`).
-//   - In `DebugMode`, includes `httpErr.Internal.Error()` in the client JSON response under `_debug_info`.
+//   - In `DebugMode`, includes `httpErr.Internal.Error()` in the client JSON response under `_debug_info` (unless redundant).
 // - For generic Go errors:
 //   - Responds with HTTP 500 Internal Server Error.
 //   - In `DebugMode`, includes the `originalErr.Error()` in the client JSON response under `_debug_info`.
@@ -74,24 +74,31 @@ func defaultGlobalErrorHandler(c *Context) error {
 			// If the HTTPError has an internal, underlying error, log it for debugging.
 			// In DebugMode, also include these internal details in the client's response.
 			if httpErr.Internal != nil {
-				logFields["internal_error_details"] = httpErr.Internal.Error()
+				internalErrorStr := httpErr.Internal.Error()
+				logFields["internal_error_details"] = internalErrorStr
 
 				if currentMode == DebugMode {
-					// Add internal error details to the client JSON response under a "_debug_info" key.
-					debugInfo := M{"internal_error_details": httpErr.Internal.Error()}
-					// Safely add to responseMessage, whether it's xylium.M, map[string]interface{}, or other.
+					var debugInfoContent interface{}
+					// Check for redundancy: if Message is a string and it's the same as Internal.Error(),
+					// then just note that internal details are covered by the main message.
+					if clientMsgStr, ok := httpErr.Message.(string); ok && clientMsgStr == internalErrorStr {
+						debugInfoContent = M{"internal_error_details": "Same as primary error message."}
+					} else {
+						debugInfoContent = M{"internal_error_details": internalErrorStr}
+					}
+
+					// Safely add debugInfoContent to responseMessage.
 					if respMap, ok := responseMessage.(M); ok {
-						respMap["_debug_info"] = debugInfo
+						respMap["_debug_info"] = debugInfoContent
 						responseMessage = respMap
 					} else if respMapTyped, ok := responseMessage.(map[string]interface{}); ok {
-						respMapTyped["_debug_info"] = debugInfo
+						respMapTyped["_debug_info"] = debugInfoContent
 						responseMessage = respMapTyped
 					} else {
-						// If responseMessage is not a map (e.g., a simple string), create a new map
-						// to include both the original message and the debug information.
+						// If responseMessage is not a map (e.g., a simple string), create a new map.
 						responseMessage = M{
 							"message":     responseMessage, // Original client-facing message.
-							"_debug_info": debugInfo,
+							"_debug_info": debugInfoContent,
 						}
 					}
 				}
@@ -195,8 +202,7 @@ func defaultNotFoundHandler(c *Context) error {
 // It returns an `xylium.HTTPError`, which is then processed by the `GlobalErrorHandler`.
 func defaultMethodNotAllowedHandler(c *Context) error {
 	// Retrieve the "Allow" header, which should have been set by Router.Handler.
-	allowHeader := c.Header("Allow") // fasthttp specific: c.Ctx.Response.Header.Peek("Allow") if set on response
-	                                 // but Router.Handler sets it on c.SetHeader which goes to response.
+	allowHeader := string(c.Ctx.Response.Header.Peek("Allow")) // Peek directly from response header set by Router.Handler
 
 	var allowedMethods []string // Slice to hold parsed allowed methods for the JSON response.
 
