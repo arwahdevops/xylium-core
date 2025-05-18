@@ -33,16 +33,6 @@ type TimeoutConfig struct {
 	ErrorHandler func(c *Context, err error) error
 }
 
-// ContextKeyOriginalUserValueForTimeout is a specific key Xylium uses to temporarily
-// store and restore fasthttp's original `UserValue` if it was a `context.Context`.
-// This is to avoid interference if `UserValue("parent_context")` is used by other
-// fasthttp components or middleware for context propagation, ensuring Xylium's timeout
-// context doesn't overwrite a context set by another part of the system unintentionally.
-// Note: This constant is currently not used in the refactored code below, as the approach
-// is to set "parent_context" and restore it. If more complex UserValue management is needed,
-// this key could be employed. The current approach is simpler.
-// const ContextKeyOriginalUserValueForTimeout = "xylium_timeout_original_parent_context"
-
 // Timeout returns a middleware that cancels the request context if processing
 // by subsequent handlers exceeds the specified `timeout` duration.
 // Uses default message and error handling if a timeout occurs.
@@ -55,7 +45,7 @@ func Timeout(timeout time.Duration) Middleware {
 
 // TimeoutWithConfig returns a Timeout middleware with the provided custom configuration.
 // It creates a cancellable context with the specified timeout and runs the subsequent
-// handler chain within that context.
+// handler chain within that context, leveraging the integrated Go context in xylium.Context.
 func TimeoutWithConfig(config TimeoutConfig) Middleware {
 	// Validate mandatory configuration: Timeout duration must be positive.
 	if config.Timeout <= 0 {
@@ -66,34 +56,30 @@ func TimeoutWithConfig(config TimeoutConfig) Middleware {
 	// This handler is invoked when a request times out.
 	defaultErrorHandler := func(c *Context, err error) error {
 		// `err` here is typically `context.DeadlineExceeded`.
-		logger := c.Logger().WithFields(M{"middleware": "Timeout"}) // Get request-scoped, contextualized logger.
-		timeoutDuration := config.Timeout                          // For logging and message.
+		logger := c.Logger().WithFields(M{"middleware": "Timeout"})
+		timeoutDuration := config.Timeout
 
-		// Construct the client-facing error message.
 		var clientErrorMessage string
 		switch msg := config.Message.(type) {
 		case string:
-			if msg == "" { // If user provided empty string, use default.
+			if msg == "" {
 				clientErrorMessage = fmt.Sprintf("Request processing timed out after %v.", timeoutDuration)
 			} else {
 				clientErrorMessage = msg
 			}
-		case func(c *Context) string: // If Message is a function, call it.
+		case func(c *Context) string:
 			if msg != nil {
 				clientErrorMessage = msg(c)
-			} else { // Fallback if function is nil (should ideally not happen).
+			} else {
 				clientErrorMessage = fmt.Sprintf("Request processing timed out after %v.", timeoutDuration)
 			}
-		default: // Fallback for other types or nil Message.
+		default:
 			clientErrorMessage = fmt.Sprintf("Request processing timed out after %v.", timeoutDuration)
 		}
 
 		logger.Warnf("Request %s %s timed out after %v. Responding with 503 Service Unavailable. Original context error: %v",
-			c.Method(), c.Path(), timeoutDuration, err) // Log with WARN level.
+			c.Method(), c.Path(), timeoutDuration, err)
 
-		// Return an HTTPError. The GlobalErrorHandler will process this, sending a 503 status
-		// and a JSON body (by default) with `clientErrorMessage`.
-		// The original context error (e.g., `context.DeadlineExceeded`) is included as the internal cause.
 		return NewHTTPError(StatusServiceUnavailable, clientErrorMessage).WithInternal(err)
 	}
 
@@ -106,93 +92,67 @@ func TimeoutWithConfig(config TimeoutConfig) Middleware {
 	// Return the actual middleware handler function.
 	return func(next HandlerFunc) HandlerFunc {
 		return func(c *Context) error {
-			logger := c.Logger().WithFields(M{"middleware": "Timeout"}) // Contextual logger.
+			logger := c.Logger().WithFields(M{"middleware": "Timeout"})
 
 			// --- Context Propagation and Timeout Setup ---
-			// Create a new context with a timeout, derived from an appropriate parent context.
-			// fasthttp.RequestCtx.UserValue is a common way to pass Go's `context.Context`
-			// through fasthttp's handler chain if other parts of the system use it.
-			var parentCtx context.Context
-			// Check if a "parent_context" (a common key) already exists in UserValue.
-			if uv := c.Ctx.UserValue("parent_context"); uv != nil {
-				if pCtx, ok := uv.(context.Context); ok {
-					parentCtx = pCtx // Use existing parent context.
-				}
-			}
+			// Get the current Go context.Context from the Xylium context.
+			// This parentCtx might have been set by previous middleware or initialized in acquireCtx.
+			parentCtx := c.GoContext() // Use the integrated Go context.
 
-			if parentCtx == nil {
-				// If no parent context was found in UserValue or it wasn't a context.Context,
-				// fallback to context.Background(). This ensures we always have a valid parent.
-				parentCtx = context.Background()
-				logger.Debugf("No 'parent_context' found in UserValue for %s %s, or it was not a Go context. Using context.Background() as parent for timeout context.",
-					c.Method(), c.Path())
-			}
+			// Create the cancellable Go context with the specified timeout, derived from parentCtx.
+			ctxWithTimeout, cancelFunc := context.WithTimeout(parentCtx, config.Timeout)
+			defer cancelFunc() // IMPORTANT: Always call cancelFunc to release resources associated with ctxWithTimeout.
 
-			// Create the cancellable context with the specified timeout.
-			ctxWithTimeout, cancel := context.WithTimeout(parentCtx, config.Timeout)
-			defer cancel() // IMPORTANT: Always call cancel to release resources associated with ctxWithTimeout.
-
-			// Make this ctxWithTimeout available to downstream handlers if they are context-aware.
-			// This is done by setting it on fasthttp's UserValue.
-			// We save the original UserValue for "parent_context" to restore it after this middleware.
-			originalUserValue := c.Ctx.UserValue("parent_context")
-			c.Ctx.SetUserValue("parent_context", ctxWithTimeout) // Expose the timed context.
-			// Restore the original UserValue after this middleware's scope.
-			defer c.Ctx.SetUserValue("parent_context", originalUserValue)
-
+			// Create a new Xylium.Context instance (shallow copy) that holds this new ctxWithTimeout.
+			// This ensures that if `next` or any subsequent handler calls `c.GoContext()`,
+			// they will receive the context that includes this timeout.
+			timedXyliumCtx := c.WithGoContext(ctxWithTimeout)
 
 			// --- Asynchronous Handler Execution with Timeout Monitoring ---
-			// Channels to signal completion or panic from the `next` handler.
 			done := make(chan error, 1)       // Buffered channel for the error (or nil) from `next(c)`.
 			panicChan := make(chan interface{}, 1) // Buffered channel for panics recovered from `next(c)`.
 
-			// Execute the next handler (the rest of the middleware chain and the route handler)
-			// in a separate goroutine. This allows the main middleware goroutine to monitor for timeouts.
 			go func() {
 				defer func() {
-					// Recover from panics within the `next` handler's goroutine.
 					if p := recover(); p != nil {
-						panicChan <- p // Send panic information to the panicChan.
+						panicChan <- p
 					}
 				}()
-				// Execute `next(c)` and send its returned error (or nil) to the `done` channel.
-				done <- next(c)
+				// Execute `next(timedXyliumCtx)`: pass the Xylium context that has the timed Go context.
+				done <- next(timedXyliumCtx)
 			}()
 
-			// Wait for one of three outcomes using `select`:
-			// 1. The `next` handler completes successfully or returns an error (`<-done`).
-			// 2. The `next` handler panics (`<-panicChan`).
-			// 3. The timeout context (`ctxWithTimeout`) is done, indicating a timeout (`<-ctxWithTimeout.Done()`).
+			// Wait for one of three outcomes:
 			select {
-			case err := <-done:
-				// Handler completed normally. `err` might be nil or an error from downstream.
-				return err // Propagate the result.
+			case errFromHandler := <-done:
+				// Handler completed normally (or with an error from downstream).
+				return errFromHandler
 
-			case p := <-panicChan:
-				// Handler panicked. Re-panic in the main middleware goroutine
-				// so Xylium's central panic handler (in Router.Handler) can catch and process it.
+			case panicVal := <-panicChan:
+				// Handler panicked. Re-panic so Xylium's central panic handler can catch it.
+				// Log using the method/path from timedXyliumCtx for context.
 				logger.Errorf("Panic recovered from downstream handler for %s %s. Re-panicking. Panic: %v",
-					c.Method(), c.Path(), p)
-				panic(p) // This panic will be caught by Router.Handler's defer.
+					timedXyliumCtx.Method(), timedXyliumCtx.Path(), panicVal)
+				panic(panicVal)
 
-			case <-ctxWithTimeout.Done():
+			case <-ctxWithTimeout.Done(): // This is the Go context's Done channel.
 				// Timeout occurred. ctxWithTimeout.Err() will be context.DeadlineExceeded.
 				timeoutError := ctxWithTimeout.Err()
 
-				// Critical Check: Has the response already been sent by the (now timed-out) handler?
-				// If so, we cannot send a new timeout error response. We can only log the event.
-				if c.ResponseCommitted() {
+				// Check if the response has already been sent by the (now timed-out) handler.
+				// Use timedXyliumCtx for this check, as it reflects the state during the handler's execution.
+				if timedXyliumCtx.ResponseCommitted() {
 					logger.Warnf(
 						"Request %s %s timed out after %v, but response was already committed. Cannot send timeout response. Original context error: %v",
-						c.Method(), c.Path(), config.Timeout, timeoutError,
+						timedXyliumCtx.Method(), timedXyliumCtx.Path(), config.Timeout, timeoutError,
 					)
-					// Return the context error. Router.Handler's defer might log this if it's unexpected
-					// for a committed response to still have an error returned.
-					return timeoutError
+					return timeoutError // Return the context error; response already sent.
 				}
 
-				// Response has not been committed, so invoke the configured timeout error handler.
-				// This handler (default or custom) is responsible for sending the client response (e.g., 503).
+				// Response not committed. Invoke the configured timeout error handler.
+				// Pass the original Xylium context `c` to the error handler.
+				// The error handler typically doesn't need the timed Go context; it just needs
+				// to know a timeout occurred (via `timeoutError`) and respond using `c`.
 				return handlerToUse(c, timeoutError)
 			}
 		}
