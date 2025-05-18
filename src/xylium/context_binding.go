@@ -185,27 +185,28 @@ func (c *Context) setStructField(fieldVal reflect.Value, fieldType reflect.Type,
 }
 
 func (c *Context) setScalarField(fieldVal reflect.Value, fieldType reflect.Type, strValue string) error {
+	// Handle time.Time separately due to multiple parsing formats.
 	if fieldType == reflect.TypeOf(time.Time{}) {
-		// PERBAIKAN: Deklarasi parsedTime dipindahkan ke dalam if CanSet
-		// atau pastikan error handlingnya benar jika tidak bisa di-set.
-		// Untuk kasus ini, jika tidak bisa di-set, kita tidak perlu parse.
 		if !fieldVal.CanSet() {
 			return fmt.Errorf("field cannot be set (type: %s)", fieldType.String())
 		}
 
-		parsedTime, err := time.Parse(time.RFC3339, strValue)
-		if err != nil {
-			parsedTime, errDate := time.Parse("2006-01-02", strValue) // Shadowing parsedTime tidak masalah di sini
-			if errDate != nil {
-				return fmt.Errorf("cannot parse '%s' as time.Time (tried RFC3339 and YYYY-MM-DD): %v / %v", strValue, err, errDate)
-			}
-			// Jika errDate nil, maka parsing tanggal berhasil.
-			fieldVal.Set(reflect.ValueOf(parsedTime)) // Gunakan parsedTime yang berhasil dari parsing tanggal
+		// Try parsing as RFC3339
+		parsedTimeRFC3339, errRFC3339 := time.Parse(time.RFC3339, strValue)
+		if errRFC3339 == nil {
+			fieldVal.Set(reflect.ValueOf(parsedTimeRFC3339))
 			return nil
 		}
-		// Jika err (dari RFC3339) nil, maka parsing RFC3339 berhasil
-		fieldVal.Set(reflect.ValueOf(parsedTime))
-		return nil
+
+		// Try parsing as YYYY-MM-DD
+		parsedTimeDate, errDate := time.Parse("2006-01-02", strValue)
+		if errDate == nil {
+			fieldVal.Set(reflect.ValueOf(parsedTimeDate))
+			return nil
+		}
+
+		// If both parsing attempts fail
+		return fmt.Errorf("cannot parse '%s' as time.Time (tried RFC3339 and YYYY-MM-DD): %v / %v", strValue, errRFC3339, errDate)
 	}
 
 	switch fieldType.Kind() {

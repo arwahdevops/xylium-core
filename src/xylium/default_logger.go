@@ -1,4 +1,3 @@
-// src/xylium/default_logger.go
 package xylium
 
 import (
@@ -208,7 +207,12 @@ func (l *DefaultLogger) doLog(level LogLevel, skipFrames int, message string, ar
 	if messageContainsArgs {
 		if hasFormatSpecifier && len(formatArgs) > 0 {
 			entry.Message = fmt.Sprintf(message, formatArgs...)
-		} else if len(formatArgs) > 0 { // Append non-formatting args if no specifiers.
+		} else if len(formatArgs) > 0 {
+			// If there are arguments but no Sprintf format specifiers in the message,
+			// append the arguments' string representations to the message string using fmt.Sprint.
+			// This provides a default behavior to ensure argument values are logged.
+			// Example: logger.Info("User logged in", userObject, sessionData)
+			// Output might be: "User logged in {User details via Sprint} {Session details via Sprint}"
 			entry.Message = message + " " + fmt.Sprint(formatArgs...)
 		}
 		// If !hasFormatSpecifier and len(formatArgs) == 0, message remains as is.
