@@ -1,10 +1,10 @@
 package xylium
 
 import (
-	"context" // For Go's context.Context
+	"context" // For Go's context.Context, used in initializing c.goCtx.
 	"sync"    // For sync.Pool, used for pooling Context objects.
 
-	"github.com/valyala/fasthttp" // For fasthttp.RequestCtx.
+	"github.com/valyala/fasthttp" // For fasthttp.RequestCtx, the underlying request context.
 )
 
 // ctxPool is a sync.Pool for Xylium Context objects.
@@ -15,24 +15,25 @@ var ctxPool = sync.Pool{
 	// New is called by the pool when it needs to create a new Context instance
 	// (e.g., if the pool is empty or all existing instances are in use).
 	New: func() interface{} {
-		// Initialize fields that need to be non-nil and have a fresh state
-		// when a Context is newly created or retrieved from the pool after reset.
-		// The `c.reset()` method will further ensure other fields are cleared.
+		// Initialize fields that need to be non-nil and have a consistent fresh state
+		// when a Context is newly created. The `c.reset()` method will further ensure
+		// other fields are cleared or reset when a Context is released back to the pool.
 		return &Context{
-			// Maps should be initialized here to ensure they are not nil.
-			// `c.reset()` will clear their contents but not necessarily nil them.
-			Params: make(map[string]string),       // Path parameters.
-			store:  make(map[string]interface{}), // Request-scoped key-value store.
+			// Params (path parameters) and store (request-scoped key-value data)
+			// are initialized as empty maps. Their contents will be cleared by `c.reset()`,
+			// but the maps themselves are reused to avoid re-allocation.
+			Params: make(map[string]string),
+			store:  make(map[string]interface{}),
 
-			index: -1, // Initial index for handler chain execution.
+			// index for handler chain execution is initialized to -1.
+			index: -1,
 
-			// `handlers` slice will be reset to `[:0]` in `c.reset()`, keeping capacity.
-			// `router` will be set by `acquireCtx` or `Router.Handler`.
-			// `Ctx` (fasthttp.RequestCtx) will be set by `acquireCtx`.
-			// `queryArgs` and `formArgs` are lazily initialized or set from `Ctx`.
-			// `responseOnce` (sync.Once) is reset in `c.reset()` by creating a new instance.
-			// `goCtx` will be initialized in `acquireCtx` when the context is obtained
-			// for a new request.
+			// Other fields like `handlers` (slice), `router` (pointer),
+			// `Ctx` (fasthttp.RequestCtx), `queryArgs`, `formArgs`, `goCtx` (Go context),
+			// and `responseOnce` (sync.Once) are either:
+			//  - Set during `acquireCtx` (e.g., `Ctx`, `goCtx`, `router` by Router.Handler).
+			//  - Lazily initialized (e.g., `queryArgs`, `formArgs`).
+			//  - Reset thoroughly in `c.reset()` (e.g., `handlers` slice to [:0], `responseOnce` to new).
 		}
 	},
 }
@@ -40,8 +41,8 @@ var ctxPool = sync.Pool{
 // acquireCtx retrieves a `Context` instance from the `ctxPool`.
 // It then initializes the `Context` with the provided `fasthttp.RequestCtx` from
 // the current HTTP request and sets up its initial Go `context.Context`.
-// The `Router` reference is typically set by the `Router.Handler` method shortly
-// after the context is acquired.
+// The `Router` reference (`c.router`) is typically set by the `Router.Handler` method
+// shortly after this function is called.
 // This function is called at the beginning of each request processing cycle.
 func acquireCtx(originalFasthttpCtx *fasthttp.RequestCtx) *Context {
 	// Get an existing Context from the pool or create a new one via ctxPool.New.
@@ -64,21 +65,24 @@ func acquireCtx(originalFasthttpCtx *fasthttp.RequestCtx) *Context {
 
 	if parentGoCtx == nil {
 		// If no "parent_context" was found or it wasn't a valid context.Context,
-		// default to context.Background(). This ensures c.goCtx is always non-nil.
+		// default to context.Background(). This ensures c.goCtx is always non-nil
+		// and provides a root context for the request lifecycle within Xylium.
 		parentGoCtx = context.Background()
 	}
 	c.goCtx = parentGoCtx // Set the initial Go context for this Xylium.Context.
 
-	// The router (`c.router`) is usually set by the caller (e.g., `Router.Handler`)
-	// immediately after acquiring the context, as it's needed for mode, logger, etc.
-	// `c.reset()` should have already prepared other fields like Params, store, index.
+	// Note: The `c.router` field is not set here. It is the responsibility of the
+	// calling code (typically `Router.Handler`) to set the router reference on the
+	// acquired context (using `c.setRouter(r)`).
+	// Other fields like Params, store, index should have been prepared by `c.reset()`
+	// from the previous use, or initialized by `ctxPool.New` if it's a brand new context.
 	return c
 }
 
 // releaseCtx resets the provided `Context` instance and returns it to the `ctxPool`.
 // Resetting involves clearing all request-specific data (see `Context.reset()`)
 // to ensure the Context is clean and ready for reuse by another request,
-// preventing data leakage.
+// preventing data leakage between requests.
 // This function is called at the end of each request processing cycle, typically
 // in a defer statement in `Router.Handler`.
 func releaseCtx(c *Context) {
