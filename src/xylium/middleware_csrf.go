@@ -1,116 +1,128 @@
+// src/xylium/middleware_csrf.go
 package xylium
 
 import (
-	"crypto/rand"    // Untuk pembuatan token acak yang aman secara kriptografis
-	"encoding/base64"  // Untuk encoding token menjadi string yang aman untuk URL/header
-	"errors"         // Untuk definisi error kustom
-	"fmt"            // Untuk formatting string error
-	"strings"        // Untuk manipulasi string (misalnya, parsing TokenLookup)
-	"time"           // Untuk manajemen durasi cookie
+	"crypto/rand"    // For cryptographically secure random token generation.
+	"encoding/base64"  // For encoding the token into a URL/header-safe string.
+	"errors"         // For defining custom error types.
+	"fmt"            // For string formatting in errors and logs.
+	"strings"        // For string manipulation (e.g., parsing TokenLookup, method checking).
+	"time"           // For cookie expiration management.
 
-	"github.com/valyala/fasthttp" // PERBAIKAN: Impor fasthttp untuk konstanta CookieSameSite dan objek Cookie
+	"github.com/valyala/fasthttp" // For fasthttp.Cookie and related constants.
 )
 
-// CSRFConfig mendefinisikan konfigurasi untuk middleware CSRF Protection.
+// CSRFConfig defines the configuration for the CSRF (Cross-Site Request Forgery) protection middleware.
 type CSRFConfig struct {
-	// TokenLength adalah panjang token CSRF dalam byte sebelum di-encode ke base64.
-	// Semakin panjang, semakin aman. Default: 32 byte.
+	// TokenLength is the length of the raw CSRF token in bytes before base64 encoding.
+	// Default: 32 bytes (256 bits), providing strong cryptographic randomness.
 	TokenLength int
 
-	// CookieName adalah nama cookie yang akan digunakan untuk menyimpan token CSRF (bagian server).
+	// CookieName is the name of the cookie used to store the server-side CSRF token.
 	// Default: "_csrf_token".
 	CookieName string
 
-	// CookiePath adalah path URL dimana cookie CSRF akan berlaku.
-	// Default: "/" (berlaku untuk seluruh domain).
+	// CookiePath is the path attribute for the CSRF cookie.
+	// Default: "/" (applies to the entire domain).
 	CookiePath string
 
-	// CookieDomain adalah domain dimana cookie CSRF akan berlaku.
-	// Kosongkan agar browser menggunakan domain saat ini.
-	// Default: "" (kosong).
+	// CookieDomain is the domain attribute for the CSRF cookie.
+	// Leave empty for the browser to use the current host.
+	// Default: "" (empty).
 	CookieDomain string
 
-	// CookieMaxAge adalah durasi (dalam detik) cookie CSRF akan valid di browser.
-	// Default: 12 jam (12 * 60 * 60 detik).
+	// CookieMaxAge specifies the duration for which the CSRF cookie is valid in the browser.
+	// Default: 12 hours (12 * time.Hour).
 	CookieMaxAge time.Duration
 
-	// CookieSecure menentukan apakah cookie hanya boleh dikirim melalui koneksi HTTPS.
-	// Sangat direkomendasikan `true` untuk produksi.
-	// Default: true.
+	// CookieSecure specifies if the CSRF cookie should only be sent over HTTPS.
+	// Highly recommended to be 'true' in production.
+	// Default: true. Set to 'false' only for local HTTP development.
 	CookieSecure bool
 
-	// CookieHTTPOnly menentukan apakah cookie tidak dapat diakses melalui JavaScript sisi klien.
-	// Untuk metode "Double Submit Cookie" di mana JavaScript perlu membaca token dari cookie
-	// untuk dikirim kembali di header, ini harus diset `false`.
-	// Jika `true`, server harus menyediakan token ke JavaScript melalui cara lain (misalnya, meta tag atau data response).
-	// Default: false.
+	// CookieHTTPOnly specifies if the CSRF cookie should be inaccessible to client-side JavaScript.
+	// For the "Double Submit Cookie" pattern where JS reads the token from this cookie
+	// to send it in a header, this MUST be 'false'. If 'true', the server needs
+	// to provide the token to JS via other means (e.g., meta tag, API response).
+	// Default: false (common for SPAs).
 	CookieHTTPOnly bool
 
-	// CookieSameSite mengatur atribut SameSite untuk cookie CSRF, membantu melindungi dari serangan CSRF lintas situs.
-	// Pilihan: fasthttp.CookieSameSiteLaxMode, fasthttp.CookieSameSiteStrictMode, fasthttp.CookieSameSiteNoneMode.
+	// CookieSameSite sets the SameSite attribute for the CSRF cookie, mitigating CSRF attacks.
+	// Options: fasthttp.CookieSameSiteLaxMode, fasthttp.CookieSameSiteStrictMode, fasthttp.CookieSameSiteNoneMode.
+	// 'Lax' is a good balance. 'Strict' can break some cross-site navigations.
+	// 'None' requires CookieSecure=true.
 	// Default: fasthttp.CookieSameSiteLaxMode.
 	CookieSameSite fasthttp.CookieSameSite
 
-	// HeaderName adalah nama header HTTP yang diharapkan berisi token CSRF dari klien untuk validasi.
-	// Umumnya digunakan oleh AJAX/SPA.
+	// HeaderName is the name of the HTTP header expected to contain the client-submitted CSRF token.
+	// Commonly used by AJAX/SPA requests.
 	// Default: "X-CSRF-Token".
 	HeaderName string
 
-	// FormFieldName adalah nama field dalam form (application/x-www-form-urlencoded atau multipart/form-data)
-	// yang diharapkan berisi token CSRF dari klien untuk validasi.
-	// Umumnya digunakan oleh form HTML tradisional.
+	// FormFieldName is the name of the form field (in application/x-www-form-urlencoded or multipart/form-data)
+	// expected to contain the client-submitted CSRF token.
+	// Commonly used by traditional HTML forms.
 	// Default: "_csrf".
 	FormFieldName string
 
-	// SafeMethods adalah daftar metode HTTP yang dianggap "aman" (tidak mengubah state server)
-	// dan oleh karena itu tidak memerlukan validasi token CSRF.
+	// SafeMethods is a list of HTTP methods considered "safe" (idempotent, not state-changing)
+	// and thus do not require CSRF token validation.
 	// Default: []string{"GET", "HEAD", "OPTIONS", "TRACE"}.
 	SafeMethods []string
 
-	// ErrorHandler adalah fungsi kustom yang akan dipanggil jika validasi CSRF gagal.
-	// Jika nil, handler default akan mengirim respons HTTP 403 Forbidden.
-	ErrorHandler HandlerFunc // func(c *Context) error
+	// ErrorHandler is a custom function invoked if CSRF validation fails.
+	// If nil, a default handler sends an HTTP 403 Forbidden response.
+	// The ErrorHandler is responsible for sending the client response.
+	ErrorHandler HandlerFunc
 
-	// TokenLookup adalah string yang mendefinisikan dari mana token CSRF akan diekstrak dari request klien.
-	// Format: "source1:name1,source2:name2,...". Source bisa "header", "form", atau "query".
-	// Contoh: "header:X-CSRF-Token,form:_csrf_token_field".
-	// Jika Extractor diset, TokenLookup akan diabaikan.
-	// Default: "header:X-CSRF-Token,form:_csrf" (sesuai HeaderName dan FormFieldName default).
+	// TokenLookup is a comma-separated string defining where to extract the CSRF token from client requests.
+	// Format: "source1:name1,source2:name2,...". Source can be "header", "form", or "query".
+	// Example: "header:X-CSRF-Token,form:_csrf_field".
+	// If Extractor is set, TokenLookup is ignored.
+	// Default: "header:X-CSRF-Token,form:_csrf" (based on default HeaderName and FormFieldName).
 	TokenLookup string
 
-	// Extractor adalah fungsi kustom untuk mengekstrak token CSRF dari Context.
-	// Memberikan fleksibilitas penuh jika TokenLookup tidak cukup.
-	// Jika diset, akan meng-override TokenLookup.
+	// Extractor is a custom function to extract the CSRF token from the xylium.Context.
+	// Provides maximum flexibility if TokenLookup is insufficient.
+	// If set, this overrides TokenLookup.
 	Extractor func(c *Context) (string, error)
+
+	// ContextTokenKey is the key used to store the generated/current CSRF token in the Xylium Context store.
+	// This allows handlers or templates to access the token.
+	// Default: "csrf_token".
+	ContextTokenKey string
 }
 
-// ErrorCSRFTokenInvalid adalah error standar yang dikembalikan jika token CSRF tidak valid, hilang, atau tidak cocok.
-var ErrorCSRFTokenInvalid = errors.New("xylium: invalid or missing CSRF token")
+// ErrorCSRFTokenInvalid is a standard error indicating an invalid, missing, or mismatched CSRF token.
+// It can be used as the internal error in NewHTTPError for CSRF failures.
+var ErrorCSRFTokenInvalid = errors.New("xylium: invalid, missing, or mismatched CSRF token")
 
-// DefaultCSRFConfig menyediakan konfigurasi CSRF default yang seimbang.
+// DefaultCSRFConfig provides sensible default configurations for CSRF protection.
 var DefaultCSRFConfig = CSRFConfig{
 	TokenLength:    32,
-	CookieName:     "_csrf_token", // Nama cookie yang umum
+	CookieName:     "_csrf_token",
 	CookiePath:     "/",
 	CookieMaxAge:   12 * time.Hour,
-	CookieSecure:   true,  // PENTING: Set `false` hanya untuk development HTTP lokal
-	CookieHTTPOnly: false, // Umum untuk SPA yang membaca token dari cookie via JS
-	CookieSameSite: fasthttp.CookieSameSiteLaxMode, // Pilihan yang baik untuk keseimbangan keamanan & UX
-	HeaderName:     "X-CSRF-Token",                 // Nama header yang umum
-	FormFieldName:  "_csrf",                        // Nama field form yang umum (bisa juga _csrf_token)
+	CookieSecure:   true,  // IMPORTANT: Set 'false' only for local HTTP development.
+	CookieHTTPOnly: false, // Common for SPAs reading token from cookie via JS.
+	CookieSameSite: fasthttp.CookieSameSiteLaxMode,
+	HeaderName:     "X-CSRF-Token",
+	FormFieldName:  "_csrf",
 	SafeMethods:    []string{MethodGet, MethodHead, MethodOptions, MethodTrace},
-	// TokenLookup default akan dibangun berdasarkan HeaderName dan FormFieldName jika tidak diset
+	// TokenLookup will be auto-generated if not set.
+	ContextTokenKey: "csrf_token", // Default key for context store.
 }
 
-// CSRF mengembalikan middleware CSRF dengan konfigurasi default.
+// CSRF returns a CSRF protection middleware with default configuration.
 func CSRF() Middleware {
 	return CSRFWithConfig(DefaultCSRFConfig)
 }
 
-// CSRFWithConfig mengembalikan middleware CSRF dengan konfigurasi yang diberikan.
+// CSRFWithConfig returns a CSRF protection middleware with the provided configuration.
+// It validates the configuration and sets up token generation, cookie management, and validation logic.
 func CSRFWithConfig(config CSRFConfig) Middleware {
-	// --- Normalisasi dan Validasi Konfigurasi ---
-	if config.TokenLength <= 0 { // Minimal panjang token yang wajar
+	// --- Normalize and Validate Configuration ---
+	if config.TokenLength <= 0 {
 		config.TokenLength = DefaultCSRFConfig.TokenLength
 	}
 	if config.CookieName == "" {
@@ -119,26 +131,22 @@ func CSRFWithConfig(config CSRFConfig) Middleware {
 	if config.CookiePath == "" {
 		config.CookiePath = DefaultCSRFConfig.CookiePath
 	}
-	if config.CookieMaxAge <= 0 { // Durasi cookie harus positif
+	if config.CookieMaxAge <= 0 {
 		config.CookieMaxAge = DefaultCSRFConfig.CookieMaxAge
 	}
-	// CookieSecure dan CookieHTTPOnly menggunakan nilai dari config jika diset,
-	// atau nilai default jika tidak diset (boolean defaultnya false).
-	// Kita perlu memastikan default dari DefaultCSRFConfig diterapkan jika user tidak menspesifikasikannya.
-	// Namun, karena boolean, jika user tidak set, akan jadi false.
-	// Jadi, kita bisa biarkan apa adanya atau set secara eksplisit jika nilai user adalah zero value boolean.
-	// Untuk CookieSecure, defaultnya true, jadi jika user tidak set, ini akan jadi false. Ini perlu diperhatikan.
-	// Solusi: User harus selalu menspesifikasikan atau kita set default di sini.
-	// Mari kita asumsikan jika tidak diset, default dari DefaultCSRFConfig berlaku.
-	// Ini sudah ditangani oleh bagaimana struct default di-pass.
-	// Misal: jika CSRF() dipanggil, config = DefaultCSRFConfig.
-	// Jika CSRFWithConfig({}) dipanggil, maka boolean akan jadi false.
+	// For boolean flags like CookieSecure and CookieHTTPOnly, if the user provides
+	// an empty CSRFConfig{}, they will default to false. We need to ensure
+	// DefaultCSRFConfig values are used if not explicitly overridden.
+	// This is implicitly handled if DefaultCSRFConfig is passed to this function.
+	// If CSRFWithConfig is called with a partially filled config,
+	// we need to merge with defaults for unprovided fields.
+	// A common pattern is to create a default, then override.
+	// Example: cfg := DefaultCSRFConfig; cfg.CookieName = "my_csrf"; CSRFWithConfig(cfg)
+	// For this function, we assume config is either DefaultCSRFConfig or a user-modified version of it.
 
-	// Jika config.CookieSameSite tidak di-set (akan menjadi 0), gunakan default.
-	if config.CookieSameSite == 0 { // fasthttp.CookieSameSite value are > 0
+	if config.CookieSameSite == 0 { // fasthttp.CookieSameSite values are typically > 0. 0 is "DefaultMode".
 		config.CookieSameSite = DefaultCSRFConfig.CookieSameSite
 	}
-
 	if config.HeaderName == "" {
 		config.HeaderName = DefaultCSRFConfig.HeaderName
 	}
@@ -148,89 +156,98 @@ func CSRFWithConfig(config CSRFConfig) Middleware {
 	if len(config.SafeMethods) == 0 {
 		config.SafeMethods = DefaultCSRFConfig.SafeMethods
 	}
+	if config.ContextTokenKey == "" {
+		config.ContextTokenKey = DefaultCSRFConfig.ContextTokenKey
+	}
 
-	// Bangun TokenLookup default jika tidak ada Extractor dan TokenLookup kosong
+	// Build TokenLookup string if it's empty and no custom Extractor is provided.
 	if config.Extractor == nil && config.TokenLookup == "" {
 		config.TokenLookup = fmt.Sprintf("header:%s,form:%s", config.HeaderName, config.FormFieldName)
 	}
 
-	// Buat map dari SafeMethods untuk pencarian yang efisien
+	// Create a map of safe HTTP methods for efficient lookup.
 	safeMethodsMap := make(map[string]struct{}, len(config.SafeMethods))
 	for _, method := range config.SafeMethods {
 		safeMethodsMap[strings.ToUpper(method)] = struct{}{}
 	}
 
-	// Parse TokenLookup menjadi daftar fungsi extractor
-	var extractors []func(c *Context) (string, error)
+	// Parse TokenLookup into a list of extractor functions if no custom Extractor is given.
+	var tokenExtractors []func(c *Context) (string, error)
 	if config.Extractor != nil {
-		extractors = append(extractors, config.Extractor)
-	} else { // Parse dari string TokenLookup
+		tokenExtractors = append(tokenExtractors, config.Extractor)
+	} else {
 		parts := strings.Split(config.TokenLookup, ",")
 		for _, part := range parts {
-			part = strings.TrimSpace(part)
-			if part == "" {
+			trimmedPart := strings.TrimSpace(part)
+			if trimmedPart == "" {
 				continue
 			}
-			segments := strings.SplitN(part, ":", 2)
+			segments := strings.SplitN(trimmedPart, ":", 2)
 			if len(segments) != 2 || segments[0] == "" || segments[1] == "" {
-				panic(fmt.Errorf("xylium: invalid CSRF TokenLookup format in part: '%s'", part))
+				panic(fmt.Errorf("xylium: invalid CSRF TokenLookup format in part: '%s'. Expected 'source:name'.", trimmedPart))
 			}
-			source, name := strings.ToLower(segments[0]), segments[1]
+			source, name := strings.ToLower(strings.TrimSpace(segments[0])), strings.TrimSpace(segments[1])
 			switch source {
 			case "header":
-				extractors = append(extractors, func(c *Context) (string, error) { return c.Header(name), nil })
+				tokenExtractors = append(tokenExtractors, func(c *Context) (string, error) { return c.Header(name), nil })
 			case "form":
-				extractors = append(extractors, func(c *Context) (string, error) { return c.FormValue(name), nil })
-			case "query":
-				extractors = append(extractors, func(c *Context) (string, error) { return c.QueryParam(name), nil })
+				tokenExtractors = append(tokenExtractors, func(c *Context) (string, error) { return c.FormValue(name), nil })
+			case "query": // Query parameters are generally not recommended for CSRF tokens due to URL logging.
+				tokenExtractors = append(tokenExtractors, func(c *Context) (string, error) { return c.QueryParam(name), nil })
 			default:
-				panic(fmt.Errorf("xylium: unsupported CSRF TokenLookup source: '%s'", source))
+				panic(fmt.Errorf("xylium: unsupported CSRF TokenLookup source: '%s'. Supported: header, form, query.", source))
 			}
 		}
 	}
-	if len(extractors) == 0 { // Harus ada setidaknya satu cara untuk mengekstrak token
-		panic("xylium: CSRF TokenLookup or Extractor must be configured to define at least one extraction method")
+	if len(tokenExtractors) == 0 {
+		panic("xylium: CSRF TokenLookup or Extractor must be configured to define at least one token extraction method.")
 	}
 
-	// Siapkan ErrorHandler
+	// Define the error handler.
 	errorHandler := config.ErrorHandler
-	if errorHandler == nil { // Handler default jika tidak ada yang disediakan
+	if errorHandler == nil { // Default error handler if none provided.
 		errorHandler = func(c *Context) error {
-			// Ambil pesan error dari context jika ada (diset saat validasi gagal)
-			errCause := ErrorCSRFTokenInvalid // Default cause
-			if errVal, exists := c.Get("csrf_error"); exists {
+			// Retrieve the specific cause if set by the middleware.
+			var internalCause error = ErrorCSRFTokenInvalid // Default internal error.
+			if errVal, exists := c.Get("csrf_validation_error"); exists {
 				if e, ok := errVal.(error); ok {
-					errCause = e
+					internalCause = e
 				}
 			}
-			return NewHTTPError(StatusForbidden, "Invalid or missing CSRF token.").WithInternal(errCause)
+			// GlobalErrorHandler will handle logging of this HTTPError.
+			return NewHTTPError(StatusForbidden, "CSRF token validation failed.").WithInternal(internalCause)
 		}
 	}
 
-	// --- Middleware Function ---
+	// --- The Middleware Function ---
 	return func(next HandlerFunc) HandlerFunc {
 		return func(c *Context) error {
-			// 1. Ambil token CSRF yang ada di cookie (jika ada).
-			tokenFromCookie := c.Cookie(config.CookieName)
+			// Get the request-scoped logger.
+			logger := c.Logger()
 
-			// 2. Untuk metode yang dianggap aman (GET, HEAD, dll.), atau jika token di cookie belum ada,
-			//    kita perlu memastikan token ada dan dikirim ke klien.
-			//    Ini berarti kita generate/refresh token dan set di cookie.
+			// 1. Retrieve the existing CSRF token from the request cookie, if any.
+			tokenFromCookie := c.Cookie(config.CookieName)
+			isNewSessionOrTokenExpired := tokenFromCookie == ""
+
+			// 2. Determine if the current request method is considered "safe".
 			_, methodIsSafe := safeMethodsMap[c.Method()]
-			if methodIsSafe || tokenFromCookie == "" {
-				newToken, err := generateRandomString(config.TokenLength)
+
+			// 3. Generate or refresh the CSRF token and set/update the cookie if:
+			//    - The method is safe (e.g., GET request, always provide/refresh token for forms/SPAs).
+			//    - Or, if it's an unsafe method but no token currently exists in the cookie (new session).
+			if methodIsSafe || isNewSessionOrTokenExpired {
+				newToken, err := generateRandomStringBase64(config.TokenLength)
 				if err != nil {
-					// Log error dan mungkin kembalikan error server jika gagal generate token krusial
-					if c.router != nil && c.router.Logger() != nil {
-						c.router.Logger().Printf("CSRF: Failed to generate new token: %v", err)
-					}
+					logger.Errorf("CSRF: Failed to generate new security token: %v", err)
+					// This is a server-side issue; return an error that GlobalErrorHandler will catch.
 					return NewHTTPError(StatusInternalServerError, "Could not generate security token.").WithInternal(err)
 				}
-				tokenFromCookie = newToken // Gunakan token baru ini untuk sisa request dan untuk di-set di cookie
+				// Update tokenFromCookie to the newly generated one for subsequent logic and cookie setting.
+				tokenFromCookie = newToken
 
-				// Set (atau perbarui) cookie CSRF
-				cookie := fasthttp.AcquireCookie() // Dapatkan cookie dari pool fasthttp
-				defer fasthttp.ReleaseCookie(cookie) // Kembalikan ke pool setelah selesai
+				// Set (or update) the CSRF token cookie.
+				cookie := fasthttp.AcquireCookie()
+				defer fasthttp.ReleaseCookie(cookie) // Return to pool.
 
 				cookie.SetKey(config.CookieName)
 				cookie.SetValue(tokenFromCookie)
@@ -239,85 +256,92 @@ func CSRFWithConfig(config CSRFConfig) Middleware {
 				cookie.SetMaxAge(int(config.CookieMaxAge.Seconds()))
 				cookie.SetSecure(config.CookieSecure)
 				cookie.SetHTTPOnly(config.CookieHTTPOnly)
-				cookie.SetSameSite(config.CookieSameSite) // Menggunakan nilai fasthttp.CookieSameSite
+				cookie.SetSameSite(config.CookieSameSite)
 				c.SetCookie(cookie)
+
+				if isNewSessionOrTokenExpired {
+					logger.Debugf("CSRF: New token generated and set in cookie '%s' for path %s %s.", config.CookieName, c.Method(), c.Path())
+				} else { // Token was refreshed for a safe method.
+					logger.Debugf("CSRF: Token refreshed in cookie '%s' for safe method %s %s.", config.CookieName, c.Method(), c.Path())
+				}
 			}
 
-			// 3. Selalu simpan token yang (seharusnya) ada di cookie (baik yang lama atau baru digenerate)
-			//    ke context. Ini berguna agar template view atau handler lain bisa mengaksesnya
-			//    untuk disisipkan ke form atau untuk keperluan AJAX.
-			c.Set("csrf_token", tokenFromCookie) // Kunci bisa dikonfigurasi jika perlu
+			// 4. Always store the current (potentially new) token from the cookie into the context.
+			//    This makes it accessible to templates or handlers that need to embed it in forms or headers.
+			c.Set(config.ContextTokenKey, tokenFromCookie)
 
-			// 4. Jika metode request *tidak* aman (misalnya POST, PUT, DELETE),
-			//    maka kita *wajib* memvalidasi token CSRF dari request.
+			// 5. If the request method is *not* safe (e.g., POST, PUT, DELETE),
+			//    CSRF token validation is required.
 			if !methodIsSafe {
 				if tokenFromCookie == "" {
-					// Ini seharusnya tidak terjadi jika logika di atas (poin 2) benar,
-					// karena token seharusnya sudah digenerate. Tapi sebagai lapisan pertahanan.
-					if c.router != nil && c.router.Logger() != nil {
-						c.router.Logger().Printf("CSRF: CRITICAL - No token in cookie for unsafe method %s %s", c.Method(), c.Path())
-					}
-					c.Set("csrf_error", ErrorCSRFTokenInvalid) // Set penyebab error
+					// This should ideally not be reached if logic in step 3 is correct,
+					// as a token should have been generated for unsafe methods if one wasn't present.
+					// This acts as a safeguard.
+					logger.Warnf("CSRF: CRITICAL - No token in cookie for unsafe method %s %s. Validation will fail.", c.Method(), c.Path())
+					c.Set("csrf_validation_error", errors.New("missing CSRF token in cookie for unsafe method"))
 					return errorHandler(c)
 				}
 
-				// Ekstrak token dari request (header, form, atau query) menggunakan daftar extractors
+				// Extract the token submitted by the client from the request (header, form, etc.).
 				var tokenFromRequest string
 				var extractionErr error
-				for _, extractorFunc := range extractors {
+				for _, extractorFunc := range tokenExtractors {
 					token, err := extractorFunc(c)
-					if err != nil { // Error dari extractor kustom
-						extractionErr = err // Simpan error pertama dari extractor
+					if err != nil { // An error from a custom extractor.
+						extractionErr = err // Store the first error encountered.
 						break
 					}
 					if token != "" {
 						tokenFromRequest = token
-						break // Token ditemukan, tidak perlu cek extractor lain
+						break // Token found, no need to check other extractors.
 					}
 				}
 
-				if extractionErr != nil { // Jika ada error dari fungsi extractor kustom
-					if c.router != nil && c.router.Logger() != nil {
-						c.router.Logger().Printf("CSRF: Custom extractor failed: %v for %s %s", extractionErr, c.Method(), c.Path())
-					}
-					return NewHTTPError(StatusInternalServerError, "CSRF token extraction process failed.").WithInternal(extractionErr)
+				if extractionErr != nil {
+					logger.Errorf("CSRF: Custom token extractor failed for %s %s: %v", c.Method(), c.Path(), extractionErr)
+					// Treat extractor failure as a server-side issue.
+					return NewHTTPError(StatusInternalServerError, "CSRF token extraction process failed internally.").WithInternal(extractionErr)
 				}
 
-				// Validasi token: token dari cookie harus sama dengan token dari request
+				// Perform the validation: token from cookie must match token from request.
+				// Note: Use a constant-time comparison function in a real high-security scenario
+				// to prevent timing attacks, though for CSRF tokens, direct string comparison is common.
+				// For simplicity, direct comparison is used here.
 				if tokenFromRequest == "" || tokenFromCookie != tokenFromRequest {
-					if c.router != nil && c.router.Logger() != nil {
-						logMsg := fmt.Sprintf("CSRF: Token mismatch or not found in request for %s %s.", c.Method(), c.Path())
-						if tokenFromRequest == "" {
-							logMsg += " Token not found in request."
-						} else {
-							// Jangan log token aktual ke log produksi untuk keamanan, cukup indikasi mismatch
-							// logMsg += fmt.Sprintf(" CookieToken: '%s', RequestToken: '%s'", tokenFromCookie, tokenFromRequest)
-							logMsg += " Token mismatch."
-						}
-						c.router.Logger().Printf(logMsg)
+					logMessage := fmt.Sprintf("CSRF: Token mismatch or not found in request for %s %s.", c.Method(), c.Path())
+					if tokenFromRequest == "" {
+						logMessage += " Client did not submit a token."
+					} else {
+						// Avoid logging actual token values to prevent accidental exposure.
+						logMessage += " Submitted token does not match cookie token."
 					}
-					c.Set("csrf_error", ErrorCSRFTokenInvalid) // Set penyebab error
+					logger.Warnf(logMessage)
+					c.Set("csrf_validation_error", ErrorCSRFTokenInvalid) // Set cause for error handler.
 					return errorHandler(c)
 				}
+				logger.Debugf("CSRF: Token validated successfully for unsafe method %s %s.", c.Method(), c.Path())
 			}
 
-			// Jika semua validasi lolos atau metode aman, lanjutkan ke handler berikutnya
+			// If validation passes (or method is safe), proceed to the next handler.
 			return next(c)
 		}
 	}
 }
 
-// generateRandomString menghasilkan string acak yang aman secara kriptografis,
-// di-encode dengan base64 URL-safe.
-func generateRandomString(lengthInBytes int) (string, error) {
-	if lengthInBytes <= 0 { // Pastikan panjang byte positif
-		lengthInBytes = 32 // Default yang aman jika input tidak valid
+// generateRandomStringBase64 generates a cryptographically secure random string,
+// encoded using URL-safe base64.
+// `lengthInBytes` is the number of random bytes to generate before encoding.
+func generateRandomStringBase64(lengthInBytes int) (string, error) {
+	if lengthInBytes <= 0 {
+		// Ensure a sensible default length if input is invalid.
+		lengthInBytes = 32 // Default to 32 bytes for strong randomness.
 	}
 	randomBytes := make([]byte, lengthInBytes)
-	// Isi slice dengan byte acak dari sumber kriptografis
+	// Fill the byte slice with random data from a cryptographically secure source.
 	if _, err := rand.Read(randomBytes); err != nil {
-		return "", fmt.Errorf("failed to read random bytes: %w", err)
+		// This would be a critical failure in the crypto/rand source.
+		return "", fmt.Errorf("failed to read random bytes for CSRF token generation: %w", err)
 	}
-	// Encode ke base64 URL-safe (tanpa padding jika memungkinkan, atau padding standar)
+	// Encode the random bytes to a URL-safe base64 string (without padding for cleaner tokens).
 	return base64.URLEncoding.EncodeToString(randomBytes), nil
 }

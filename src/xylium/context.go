@@ -8,6 +8,7 @@ import (
 	"github.com/valyala/fasthttp"          // For fasthttp.RequestCtx
 )
 
+// --- Validator (no changes needed from previous versions) ---
 var (
 	defaultValidator     *validator.Validate
 	defaultValidatorLock sync.RWMutex
@@ -17,8 +18,6 @@ func init() {
 	defaultValidator = validator.New()
 }
 
-// SetCustomValidator allows replacing the default global validator instance.
-// It should be called before any validation occurs, typically during application setup.
 func SetCustomValidator(v *validator.Validate) {
 	defaultValidatorLock.Lock()
 	defer defaultValidatorLock.Unlock()
@@ -28,133 +27,133 @@ func SetCustomValidator(v *validator.Validate) {
 	defaultValidator = v
 }
 
-// GetValidator returns the current global validator instance.
-// This can be used for custom validation logic outside of BindAndValidate.
 func GetValidator() *validator.Validate {
 	defaultValidatorLock.RLock()
 	defer defaultValidatorLock.RUnlock()
 	return defaultValidator
 }
 
-// Context represents the context of the current HTTP request. It holds request and
-// response information, path parameters, a data store, and a reference to the router.
+// --- Context Struct (no changes needed) ---
+// Context represents the context of the current HTTP request.
 type Context struct {
-	Ctx      *fasthttp.RequestCtx   // The underlying fasthttp request context.
-	Params   map[string]string      // Stores URL path parameters.
-	handlers []HandlerFunc          // The chain of handlers to be executed for the request.
-	index    int                    // Current index in the handlers chain.
-	store    map[string]interface{} // A key-value store for passing data between middleware/handlers.
-	mu       sync.RWMutex           // Mutex to protect concurrent access to the 'store'.
-	router   *Router                // Reference to the router that handled this request.
+	Ctx      *fasthttp.RequestCtx
+	Params   map[string]string
+	handlers []HandlerFunc
+	index    int
+	store    map[string]interface{}
+	mu       sync.RWMutex // Protects 'store'.
+	router   *Router      // Reference to the router.
 
-	// Cached arguments to avoid re-parsing.
-	queryArgs *fasthttp.Args // Cached query arguments.
-	formArgs  *fasthttp.Args // Cached form arguments.
+	queryArgs *fasthttp.Args
+	formArgs  *fasthttp.Args
 
-	// responseOnce ensures that certain response-related operations (like setting default content type)
-	// happen only once.
 	responseOnce sync.Once
 }
 
-// reset prepares the Context instance for reuse when it's put back into the pool.
-// It clears or resets all fields to their initial state.
+// reset (no changes needed from previous versions)
 func (c *Context) reset() {
 	c.Ctx = nil
-	// Clear Params map. Iterate and delete to ensure underlying array might be GC'd if large.
 	for k := range c.Params {
 		delete(c.Params, k)
 	}
-	// Reset handlers slice without reallocating if possible.
 	c.handlers = c.handlers[:0]
 	c.index = -1
-	// Clear store map.
 	for k := range c.store {
 		delete(c.store, k)
 	}
-	c.router = nil    // Remove reference to the router.
-	c.queryArgs = nil // Clear cached query args.
-	c.formArgs = nil  // Clear cached form args.
-	// Reset responseOnce for the next use of this context object.
+	c.router = nil
+	c.queryArgs = nil
+	c.formArgs = nil
 	c.responseOnce = sync.Once{}
 }
 
-// Next executes the next handler in the middleware chain for the current request.
-// It's primarily used within middleware to pass control to the next middleware or handler.
+// Next (no changes needed)
 func (c *Context) Next() error {
 	c.index++
 	if c.index < len(c.handlers) {
 		return c.handlers[c.index](c)
 	}
-	return nil // No more handlers in the chain.
+	return nil
 }
 
-// setRouter (unexported) associates the router with the context.
-// This is called internally when the context is acquired.
+// setRouter (no changes needed)
 func (c *Context) setRouter(r *Router) {
 	c.router = r
 }
 
-// ResponseCommitted checks if the response header has already been sent.
-// This implementation infers the committed state based on fasthttp.Response properties,
-// as fasthttp.RequestCtx.ResponseWritten() is not directly available.
+// ResponseCommitted (no changes needed)
 func (c *Context) ResponseCommitted() bool {
-	if c.Ctx == nil {
-		return false // Context not properly initialized.
-	}
-
-	// If the connection is hijacked, fasthttp no longer controls standard HTTP responses.
-	// Consider it "committed" from Xylium's perspective to prevent error handlers
-	// from attempting to write a standard HTTP error.
-	if c.Ctx.Hijacked() {
-		return true
-	}
-
-	resp := &c.Ctx.Response // Pointer to the fasthttp.Response object.
+	if c.Ctx == nil { return false }
+	if c.Ctx.Hijacked() { return true }
+	resp := &c.Ctx.Response
 	sc := resp.StatusCode()
-
-	// For 101 Switching Protocols, if the status is set, we assume headers are sent
-	// or are about to be sent, and control will be passed to another protocol handler.
-	if sc == fasthttp.StatusSwitchingProtocols {
-		return true
-	}
-
-	// If a body stream is set, fasthttp will handle writing; assume committed.
-	if resp.IsBodyStream() {
-		return true
-	}
-
+	if sc == fasthttp.StatusSwitchingProtocols { return true }
+	if resp.IsBodyStream() { return true }
 	bodyLen := len(resp.Body())
-	contentLengthSet := resp.Header.ContentLength() >= 0 // -1 if not set, -2 if chunked.
-
-	// Heuristics:
-	// - A non-default status code (not 0 or 200 if no body) implies headers are likely set.
-	// - If the body has been written, headers are definitely sent.
-	// - If Content-Length has been explicitly set, headers are likely configured.
-	if sc != fasthttp.StatusOK && sc != 0 {
-		return true
-	}
-	if bodyLen > 0 {
-		return true
-	}
-	if contentLengthSet {
-		return true
-	}
-
-	// If status is 200 (default or explicit) but no body and no content-length,
-	// or if status is 0, it's likely nothing has been sent yet.
+	contentLengthSet := resp.Header.ContentLength() >= 0
+	if sc != fasthttp.StatusOK && sc != 0 { return true }
+	if bodyLen > 0 { return true }
+	if contentLengthSet { return true }
 	return false
 }
 
-// RouterMode returns the operating mode of the router associated with this context.
-// Returns an empty string if the router is not set on the context (which should not
-// happen in a normal request lifecycle handled by the framework).
-// If an empty string is returned, the caller might default to ReleaseMode.
+// RouterMode (no changes needed)
 func (c *Context) RouterMode() string {
 	if c.router != nil {
 		return c.router.CurrentMode()
 	}
-	// This case should ideally not be reached if context is always properly
-	// initialized by the router. Returning ReleaseMode or an empty string are options.
-	// Empty string makes it explicit that the router info was missing.
-	return ""
+	return "" // Or default to ReleaseMode if router is unexpectedly nil.
+}
+
+// Logger returns a xylium.Logger instance for the current request context.
+// If the RequestID middleware has been used and a request ID is present in the
+// context store, this method returns a new logger instance (derived from the
+// router's base logger) that automatically includes the 'request_id' field
+// in all its log entries. Otherwise, it returns the router's base logger.
+// It includes a fallback to a new DefaultLogger if the router or its logger is nil,
+// which should ideally not happen in a normal request lifecycle.
+func (c *Context) Logger() Logger {
+	// Check for a valid router and its logger.
+	if c.router == nil || c.router.Logger() == nil {
+		// This is an unexpected state, likely indicating an issue with context initialization
+		// or a call to c.Logger() outside a valid Xylium request lifecycle.
+		// Create a temporary, emergency logger.
+		emergencyLogger := NewDefaultLogger() // Assumes NewDefaultLogger() is available.
+		emergencyLogger.SetLevel(LevelWarn)   // Log this warning at WARN level.
+
+		// Attempt to get some identifying information for the log message.
+		var pathInfo string = "unknown_path (router/logger_is_nil)"
+		if c.Ctx != nil && c.Ctx.Path() != nil {
+			pathInfo = string(c.Ctx.Path())
+		}
+
+		emergencyLogger.Warnf(
+			"Context.Logger() called but c.router or c.router.Logger() is nil for request to '%s'. "+
+				"This is highly unusual. Returning a temporary emergency logger. "+
+				"Please check context initialization.",
+			pathInfo,
+		)
+		return emergencyLogger
+	}
+
+	// Get the base logger from the router. This logger is already configured
+	// (level, color, etc.) by the router based on the Xylium operating mode.
+	baseLogger := c.router.Logger()
+
+	// Check if a RequestID is available in the context store.
+	// ContextKeyRequestID is a const defined in middleware_requestid.go.
+	if requestIDValue, exists := c.Get(ContextKeyRequestID); exists {
+		if requestIDString, ok := requestIDValue.(string); ok && requestIDString != "" {
+			// If a valid request ID exists, return a new logger instance
+			// with the 'request_id' field automatically included.
+			// The key for the field is also taken from ContextKeyRequestID for consistency.
+			return baseLogger.WithFields(M{string(ContextKeyRequestID): requestIDString})
+		}
+		// If requestIDValue exists but is not a valid string, log a debug message (optional)
+		// and fall through to return the baseLogger.
+		// baseLogger.Debugf("Context.Logger: Found ContextKeyRequestID but it's not a valid string: %T, %v", requestIDValue, requestIDValue)
+	}
+
+	// If no valid RequestID is found, return the router's base logger.
+	return baseLogger
 }
