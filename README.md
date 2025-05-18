@@ -60,7 +60,7 @@ package main
 
 import (
 	"net/http"
-	"github.com/arwahdevops/xylium-core/src/xylium" // Adjust import path as needed
+	"github.com/arwahdevops/xylium-core/src/xylium"
 )
 
 func main() {
@@ -159,5 +159,3 @@ Please ensure to:
 ## 📜 License
 
 Xylium is licensed under the [MIT License](LICENSE).
-
----
