@@ -1,412 +1,427 @@
-// src/xylium/tree.go
 package xylium
 
 import (
-	"fmt"     // For formatting error messages and route printing
-	"sort"    // For sorting child nodes and methods for consistent behavior/output
-	"strings" // For path manipulation
+	"fmt"     // For formatting error messages and route printing.
+	"sort"    // For sorting child nodes and methods for consistent behavior/output.
+	"strings" // For path manipulation (splitting, joining, replacing).
 )
 
-// nodeType defines the type of a node in the radix tree.
+// nodeType defines the type of a node in the radix tree, influencing matching priority.
+// Static nodes have the highest priority, followed by parameter nodes, then catch-all nodes.
 type nodeType uint8
 
 const (
-	staticNode   nodeType = iota // Node for static path segments (e.g., /users)
-	paramNode                    // Node for path parameters (e.g., /users/:id)
-	catchAllNode                 // Node for catch-all parameters (e.g., /static/*filepath)
+	staticNode   nodeType = iota // Represents a static path segment (e.g., "/users", "/products").
+	paramNode                    // Represents a named path parameter (e.g., "/users/:id", "/items/:category").
+	catchAllNode                 // Represents a catch-all parameter, must be at the end of a path (e.g., "/static/*filepath").
 )
 
-// routeTarget holds the handler and middleware for a specific route and HTTP method.
+// routeTarget holds the endpoint-specific handler and middleware for a route
+// associated with a particular HTTP method on a tree node.
 type routeTarget struct {
-	handler    HandlerFunc  // The main request handler: func(*Context) error
-	middleware []Middleware // Middleware specific to this particular route
+	handler    HandlerFunc  // The main request handler function: `func(*Context) error`.
+	middleware []Middleware // Slice of middleware specific to this particular route and method.
 }
 
-// node represents a node in the radix tree.
+// node represents a node in the radix tree. Each node corresponds to a segment
+// of a URL path and can have associated handlers for different HTTP methods.
 type node struct {
-	path      string                 // The path segment this node represents (e.g., "users", ":id", "*filepath")
-	children  []*node                // Child nodes, sorted by type and then path for predictable matching
-	nodeType  nodeType               // Type of the node (staticNode, paramNode, catchAllNode)
-	paramName string                 // Name of the parameter if nodeType is paramNode or catchAllNode (e.g., "id", "filepath")
-	handlers  map[string]routeTarget // Map of HTTP method (e.g., "GET") to its routeTarget (handler and middleware)
+	path      string                 // The path segment this node represents (e.g., "users", ":id", "*filepath").
+	children  []*node                // Child nodes, sorted by type (static, param, catch-all) and then by path string for predictable matching.
+	nodeType  nodeType               // The type of this node (staticNode, paramNode, catchAllNode).
+	paramName string                 // If nodeType is paramNode or catchAllNode, this stores the name of the parameter (e.g., "id", "filepath").
+	handlers  map[string]routeTarget // Map of HTTP method (e.g., "GET", "POST") to its `routeTarget` (handler and middleware).
 }
 
 // Tree is the radix tree implementation used for Xylium's routing.
+// It allows for efficient matching of URL paths to handlers, supporting
+// static paths, path parameters, and catch-all routes.
 type Tree struct {
-	root *node // The root node of the tree, representing the "/" path base.
+	root *node // The root node of the tree, effectively representing the base "/" path.
 }
 
-// NewTree creates a new, empty radix tree.
+// NewTree creates a new, empty radix tree, initializing the root node.
 func NewTree() *Tree {
 	return &Tree{
-		// Initialize the root node. Its path is effectively empty as it's the base.
+		// Initialize the root node. Its path is effectively empty as it's the conceptual base.
+		// It's a static node by nature.
 		root: &node{path: "", nodeType: staticNode, children: make([]*node, 0)},
 	}
 }
 
 // Add registers a new route (handler and middlewares) for a given HTTP method and path pattern.
-// It panics if the path is invalid, the handler is nil, or if a handler is already registered
-// for the same method and path combination.
+// - `method`: The HTTP method (e.g., "GET", "POST"), normalized to uppercase.
+// - `path`: The URL path pattern (e.g., "/users", "/users/:id", "/files/*filepath").
+//           Must begin with "/". Trailing slashes (except for the root path "/") are generally removed.
+// - `handler`: The `HandlerFunc` to execute when this route is matched.
+// - `middlewares`: A variadic slice of `Middleware` specific to this route.
+// Panics if the path format is invalid, if the handler is nil, or if a handler is already registered
+// for the same method and path.
 func (t *Tree) Add(method, path string, handler HandlerFunc, middlewares ...Middleware) {
 	if path == "" || path[0] != '/' {
-		panic("xylium: path must begin with '/'")
+		panic("xylium: path must begin with '/' (e.g., \"/users\", \"/\")")
 	}
 	if handler == nil {
-		panic("xylium: handler cannot be nil")
+		panic("xylium: handler cannot be nil for Add operation")
 	}
-	method = strings.ToUpper(method) // Normalize HTTP method to uppercase.
+	method = strings.ToUpper(method) // Normalize HTTP method to uppercase for consistent map keys.
 
-	currentNode := t.root
+	currentNode := t.root // Start traversal from the root.
+
 	// Normalize path: remove trailing slash if it's not the root path itself.
+	// e.g., "/users/" becomes "/users", but "/" remains "/".
 	if len(path) > 1 && path[len(path)-1] == '/' {
 		path = path[:len(path)-1]
 	}
-	segments := splitPathOptimized(path) // Use the optimized path splitter.
 
+	// Split the path into segments (e.g., "/users/:id" -> ["users", ":id"]).
+	// An empty path or "/" results in an empty segments slice.
+	segments := splitPathOptimized(path)
+
+	// Traverse or build the tree based on path segments.
 	for i, segment := range segments {
-		childNode := currentNode.findOrAddChild(segment)
-		currentNode = childNode
-		// A catch-all segment must be the last part of the path pattern.
+		childNode := currentNode.findOrAddChild(segment) // Find existing child or create a new one.
+		currentNode = childNode                          // Move to the child node.
+
+		// Validate catch-all segment placement: it must be the last segment.
 		if childNode.nodeType == catchAllNode && i < len(segments)-1 {
 			panic(fmt.Sprintf("xylium: catch-all segment '*' must be the last part of the path pattern (e.g. /files/*filepath), offending path: %s", path))
 		}
 	}
 
-	// Initialize handlers map if it's nil for the target node.
+	// At the target node (end of the path), register the handler for the given method.
 	if currentNode.handlers == nil {
 		currentNode.handlers = make(map[string]routeTarget)
 	}
-	// Check if a handler for this method and path already exists.
 	if _, exists := currentNode.handlers[method]; exists {
+		// Prevent duplicate registration for the same method and path.
 		panic(fmt.Sprintf("xylium: handler already registered for method %s and path %s", method, path))
 	}
-	// Store the handler and its associated middleware.
 	currentNode.handlers[method] = routeTarget{handler: handler, middleware: middlewares}
 }
 
-// findOrAddChild finds a child node matching the given segment or creates a new one if not found.
-// Child nodes are kept sorted to ensure correct matching priority: static > param > catchAll.
+// findOrAddChild attempts to find a child node matching the given segment.
+// If no such child exists, it creates a new one, adds it to the parent's children,
+// and re-sorts the children to maintain matching priority (static > param > catch-all).
 func (n *node) findOrAddChild(segment string) *node {
-	nt, paramName := getNodeTypeAndParam(segment)
+	nt, paramName := getNodeTypeAndParam(segment) // Determine node type and param name from segment.
 
-	// Attempt to find an existing child node that matches the segment and type.
+	// Try to find an existing child that matches the segment and type.
 	for _, child := range n.children {
-		if child.nodeType == nt { // Must match node type.
-			if nt == staticNode && child.path == segment { // For static nodes, path segment must match.
-				return child
-			}
-			// For param/catchAll, the raw segment (e.g., ":id") is stored in child.path.
-			if (nt == paramNode || nt == catchAllNode) && child.path == segment {
+		if child.nodeType == nt {
+			// For static nodes, paths must match exactly.
+			// For param/catch-all, the segment string itself (e.g., ":id", "*filepath") is the 'path'.
+			if child.path == segment { // This covers static, param, and catch-all by their definition.
 				return child
 			}
 		}
 	}
 
-	// If no matching child is found, create a new one.
+	// No existing child found, create a new one.
 	newNode := &node{
-		path:      segment,   // Store the raw segment (e.g., "users", ":id").
+		path:      segment,    // Store the raw segment (e.g., "users", ":id", "*filepath").
 		nodeType:  nt,
 		paramName: paramName,
-		children:  make([]*node, 0), // Initialize children slice.
+		children:  make([]*node, 0), // Initialize children slice for the new node.
 	}
-	n.children = append(n.children, newNode)
+	n.children = append(n.children, newNode) // Add to parent's children.
 
-	// Sort children to ensure correct matching order: static > param > catchAll.
-	// This is crucial for routing to work correctly when ambiguous paths exist
-	// (e.g., /users/new vs /users/:id).
+	// Re-sort children to maintain matching priority:
+	// 1. By nodeType (static < param < catchAll).
+	// 2. For same nodeType, by path string (lexicographical, primarily for consistent behavior).
 	sort.Slice(n.children, func(i, j int) bool {
 		if n.children[i].nodeType != n.children[j].nodeType {
-			return n.children[i].nodeType < n.children[j].nodeType // Order: static, param, catchAll
+			return n.children[i].nodeType < n.children[j].nodeType // Lower nodeType value = higher priority.
 		}
-		// Within the same node type, sort by path for deterministic behavior.
+		// If types are the same, sort by path string for deterministic behavior, though
+		// for params/catch-all at the same level, this is less about priority and more about consistency.
+		// Multiple params at the same level (e.g., /:id and /:name) are usually an anti-pattern
+		// and might lead to ambiguity if not handled carefully in segment naming or structure.
 		return n.children[i].path < n.children[j].path
 	})
 	return newNode
 }
 
 // Find searches for a handler matching the request's HTTP method and path.
-// It returns:
-// - The found HandlerFunc.
-// - Route-specific middleware associated with the found route.
-// - A map of extracted path parameters.
-// - A slice of HTTP methods allowed for the matched path (used for 405 Method Not Allowed).
+// It traverses the radix tree based on the request path segments.
+// Returns:
+// - `handler`: The `HandlerFunc` if a match is found for the method and path.
+// - `routeMw`: The slice of `Middleware` specific to the matched route.
+// - `params`: A map of extracted path parameters (e.g., {"id": "123"}).
+// - `allowedMethods`: A sorted slice of HTTP methods that *are* defined for the matched path,
+//   even if the requested method itself wasn't found. This is used for 405 Method Not Allowed responses.
+// If no route matches the path at all, all return values will be nil/empty.
+// If a path matches but not the method, handler/routeMw will be nil, but params and allowedMethods will be populated.
 func (t *Tree) Find(method, requestPath string) (handler HandlerFunc, routeMw []Middleware, params map[string]string, allowedMethods []string) {
 	currentNode := t.root
-	foundParams := make(map[string]string) // To store extracted parameters.
-	method = strings.ToUpper(method)       // Normalize method.
+	foundParams := make(map[string]string) // Initialize map for path parameters.
+	method = strings.ToUpper(method)       // Normalize request method.
 
-	// Normalize requestPath: remove trailing slash if not the root path.
+	// Normalize requestPath: remove trailing slash if not root.
 	if len(requestPath) > 1 && requestPath[len(requestPath)-1] == '/' {
 		requestPath = requestPath[:len(requestPath)-1]
 	}
-	segments := splitPathOptimized(requestPath) // Use the optimized path splitter.
+	segments := splitPathOptimized(requestPath) // Split request path into segments.
 
-	var matchedNode *node
-	// Recursively search the path starting from the root node and the first segment.
+	var matchedNode *node // Pointer to store the node that ultimately matches the path.
+	// Recursively search the tree for a node matching the path segments.
 	searchPathRecursive(currentNode, segments, 0, foundParams, &matchedNode)
 
+	// If no node matched the full path, or if the matched node has no handlers defined at all.
 	if matchedNode == nil || matchedNode.handlers == nil {
-		// No node matched the path, or the matched node has no handlers defined.
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil // 404 Not Found scenario from tree's perspective.
 	}
 
-	// Collect all HTTP methods allowed for this specific path.
+	// A node matching the path was found. Collect all methods defined for this node.
+	// This list is used for the "Allow" header in 405 responses.
 	allowed := make([]string, 0, len(matchedNode.handlers))
 	for m := range matchedNode.handlers {
 		allowed = append(allowed, m)
 	}
-	sort.Strings(allowed) // Sort for a consistent "Allow" header in 405 responses.
+	sort.Strings(allowed) // Sort for consistent "Allow" header.
 
-	// Check if a handler exists for the requested HTTP method.
+	// Check if a handler exists for the specific requested HTTP method.
 	if target, ok := matchedNode.handlers[method]; ok {
+		// Handler found for the method and path.
 		return target.handler, target.middleware, foundParams, allowed
 	}
 
-	// Handler for the specific method not found, but the path itself exists.
-	// Return foundParams and allowedMethods for a 405 Method Not Allowed response.
+	// Path matched, but no handler for the requested method (405 Method Not Allowed scenario).
+	// Return params and allowedMethods, but nil handler/middleware.
 	return nil, nil, foundParams, allowed
 }
 
-// searchPathRecursive is a helper function to recursively find a matching node in the tree.
-// It populates `params` with extracted path parameters and sets `matchedNode` if a
-// handler-bearing node is found that matches the full path.
+// searchPathRecursive is the core recursive helper function for `Tree.Find`.
+// It attempts to match segments of the request path against nodes in the tree.
+// - `current`: The current node being examined in the tree.
+// - `segments`: The slice of path segments from the request URL.
+// - `segIdx`: The index of the current segment being matched.
+// - `params`: The map to store extracted path parameters.
+// - `matchedNode`: A pointer to a variable where the successfully matched node will be stored.
+// The function explores children based on priority: static, then param, then catch-all.
 func searchPathRecursive(current *node, segments []string, segIdx int, params map[string]string, matchedNode **node) {
-	// Base case: If all path segments have been consumed.
+	// Base case: All segments of the request path have been processed.
 	if segIdx == len(segments) {
-		// If the current node has handlers, it's a potential match.
+		// If the current node has handlers defined, it's a potential match.
 		if current.handlers != nil {
-			*matchedNode = current
+			*matchedNode = current // Store this node as the match.
 		}
-		return
+		return // End recursion for this path.
 	}
 
-	currentSegment := segments[segIdx]
+	currentSegment := segments[segIdx] // The current path segment to match.
 
-	// Iterate over the children of the current node.
-	// Children are already sorted by nodeType (static, then param, then catchAll).
+	// Iterate through children of the current node, respecting matching priority.
+	// Children are pre-sorted: static, then param, then catch-all.
 	for _, child := range current.children {
 		switch child.nodeType {
 		case staticNode:
-			if child.path == currentSegment { // Static segment match.
+			// Static child: segment must match exactly.
+			if child.path == currentSegment {
 				searchPathRecursive(child, segments, segIdx+1, params, matchedNode)
-				if *matchedNode != nil { // If a match was found deeper, propagate it up.
-					return
-				}
+				if *matchedNode != nil { return } // If a deeper match was found, propagate it up.
 			}
 		case paramNode:
-			// Parameter node matches any segment at this level.
-			params[child.paramName] = currentSegment // Store the extracted parameter value.
+			// Parameter child: captures the segment value.
+			params[child.paramName] = currentSegment // Store param value.
 			searchPathRecursive(child, segments, segIdx+1, params, matchedNode)
-			if *matchedNode != nil { // If a match was found deeper, propagate.
-				return
-			}
-			// Backtrack: If no match was found down this param path, remove the param.
-			// This is important if there are other sibling nodes (e.g., another static route)
-			// that could match if this param path fails.
-			delete(params, child.paramName)
+			if *matchedNode != nil { return } // If a deeper match, propagate.
+			delete(params, child.paramName)    // Backtrack: remove param if this path didn't lead to a full match.
 		case catchAllNode:
-			// Catch-all node consumes all remaining segments.
-			// It reconstructs the path from the current segment to the end.
+			// Catch-all child: captures this segment and all remaining segments.
+			// It must be the last part of a registered route.
 			params[child.paramName] = strings.Join(segments[segIdx:], "/")
-			if child.handlers != nil { // A catch-all node itself must have handlers to be a match.
-				*matchedNode = child
+			if child.handlers != nil { // A catch-all node itself can have handlers.
+				*matchedNode = child // This is a match.
 			}
-			return // Catch-all is always terminal for this branch of the search.
+			return // Catch-all consumes the rest; no further recursion needed on this branch.
 		}
-		// If a match has been found by any child type and it was terminal (e.g. full match),
-		// no need to check other children at this level.
+		// Optimization: If a catch-all from a sibling branch already matched, it takes precedence
+		// over deeper static/param matches from the current branch *if this current branch
+		// doesn't lead to a handler*. This logic is subtle and relies on how `matchedNode` is updated.
+		// The current loop explores static/param first. If they find a handler, great.
+		// If not, and a prior sibling was a catch-all that had a handler, that one might win.
+		// However, the primary matching ensures direct static/param matches are preferred over catch-all at same level.
+		// If a match (especially a catch-all) is found and has handlers, we often return early.
 		if *matchedNode != nil && (*matchedNode).nodeType == catchAllNode {
+			// This condition might be more relevant if exploring siblings *after* a catch-all,
+			// but children are sorted, so catch-all is last.
 			return
 		}
 	}
 }
 
 // splitPathOptimized splits a URL path into its constituent segments.
-// This version aims to reduce allocations compared to the standard strings.Split,
-// especially by creating string views (sub-slices of the original path string)
-// for segments, thus avoiding new string allocations for each segment's data.
-// Example: "/users/info" -> ["users", "info"]
-// Example: "/" -> []
+// It handles leading/trailing slashes and empty paths efficiently.
+// Example: "/" -> [], "/users" -> ["users"], "/users/:id" -> ["users", ":id"].
 func splitPathOptimized(path string) []string {
-	if path == "" || path == "/" {
-		return []string{} // Return an empty slice for root or empty paths.
+	if path == "" || path == "/" { // Root path or empty path has no segments.
+		return []string{}
 	}
 
-	// Manually trim leading and trailing slashes to define the relevant part of the path.
+	// Normalize: remove leading slash for splitting, and trailing slash if present.
 	start := 0
 	end := len(path)
-
 	if path[0] == '/' {
 		start = 1
 	}
-	// Check 'end > start' to correctly handle paths like "/" which become empty after this.
+	// Path was already normalized for trailing slashes in Tree.Add and Tree.Find,
+	// but being defensive here doesn't hurt if called from elsewhere.
 	if end > start && path[end-1] == '/' {
 		end--
 	}
 
-	// If the path becomes empty after trimming (e.g., original was "/" or "//").
+	// If, after trimming, the path is empty (e.g., was just "/" or "//"), no segments.
 	if start >= end {
 		return []string{}
 	}
 
-	// 'trimmedPathView' is a view into the original 'path' string, no new allocation here.
-	trimmedPathView := path[start:end]
+	trimmedPathView := path[start:end] // View of the path without leading/trailing slashes.
 
-	// First pass: count segments to pre-allocate the result slice accurately.
-	// This avoids reallocations if append is used on a slice with insufficient capacity.
+	// Count segments first to pre-allocate slice (minor optimization).
 	segmentCount := 0
 	inSegment := false
 	for i := 0; i < len(trimmedPathView); i++ {
 		if trimmedPathView[i] == '/' {
-			if inSegment { // Found the end of a segment.
+			if inSegment {
 				segmentCount++
 				inSegment = false
 			}
 		} else {
-			if !inSegment { // Found the start of a new segment.
+			if !inSegment {
 				inSegment = true
 			}
 		}
 	}
-	if inSegment { // Account for the last segment if the path doesn't end with '/'.
+	if inSegment { // Account for the last segment.
 		segmentCount++
 	}
 
-	if segmentCount == 0 { // Handles cases like "///" which become empty after trim.
+	if segmentCount == 0 { // Should not happen if start < end.
 		return []string{}
 	}
 
-	// Pre-allocate the slice for segments.
+	// Allocate and populate segments.
 	segments := make([]string, segmentCount)
 	segmentIdx := 0
-	currentSegmentStart := -1 // Start of the current segment within trimmedPathView.
-
-	// Second pass: extract segments as string views.
+	currentSegmentStart := -1
 	for i := 0; i < len(trimmedPathView); i++ {
 		if trimmedPathView[i] == '/' {
-			if currentSegmentStart != -1 { // If we are inside a segment.
-				// Extract the segment as a view.
+			if currentSegmentStart != -1 { // End of a segment.
 				segments[segmentIdx] = trimmedPathView[currentSegmentStart:i]
 				segmentIdx++
-				currentSegmentStart = -1 // Reset for the next segment.
+				currentSegmentStart = -1 // Reset for next segment.
 			}
 		} else {
-			if currentSegmentStart == -1 { // Mark the start of a new segment.
+			if currentSegmentStart == -1 { // Start of a new segment.
 				currentSegmentStart = i
 			}
 		}
 	}
-
-	// Add the last segment if it exists.
-	if currentSegmentStart != -1 {
+	if currentSegmentStart != -1 { // Capture the last segment.
 		segments[segmentIdx] = trimmedPathView[currentSegmentStart:]
 	}
-
 	return segments
 }
 
-// getNodeTypeAndParam determines the node type and parameter name from a path segment.
-// Example: ":id" -> (paramNode, "id")
-// Example: "*filepath" -> (catchAllNode, "filepath")
-// Example: "users" -> (staticNode, "")
+// getNodeTypeAndParam determines the node type (static, param, catch-all)
+// and extracts the parameter name from a path segment string.
+// Example: "users" -> (staticNode, ""), ":id" -> (paramNode, "id"), "*filepath" -> (catchAllNode, "filepath").
+// Panics if parameter/catch-all segments are malformed (e.g., ":", "*").
 func getNodeTypeAndParam(segment string) (nodeType, string) {
-	if len(segment) == 0 {
-		// This case should ideally be avoided by `splitPathOptimized` not producing empty segments.
-		// If it happens, treating as static might be a fallback, though it indicates an issue.
+	if len(segment) == 0 { // Should not happen with `splitPathOptimized`.
 		return staticNode, ""
 	}
 	switch segment[0] {
 	case ':': // Parameter node.
-		if len(segment) > 1 { // Ensure there's a name after ':'.
-			return paramNode, segment[1:]
+		if len(segment) > 1 {
+			return paramNode, segment[1:] // Name is string after ':'.
 		}
-		// Invalid segment like ":" (colon only).
-		panic(fmt.Sprintf("xylium: invalid parameter segment: '%s' (must have a name after ':')", segment))
+		panic(fmt.Sprintf("xylium: invalid parameter segment: '%s' (name missing)", segment))
 	case '*': // Catch-all node.
-		if len(segment) > 1 { // Ensure there's a name after '*'.
-			return catchAllNode, segment[1:]
+		if len(segment) > 1 {
+			return catchAllNode, segment[1:] // Name is string after '*'.
 		}
-		// Invalid segment like "*" (asterisk only).
-		panic(fmt.Sprintf("xylium: invalid catch-all segment: '%s' (must have a name after '*')", segment))
+		panic(fmt.Sprintf("xylium: invalid catch-all segment: '%s' (name missing)", segment))
 	}
-	// Default to a static node if no special prefix is found.
-	return staticNode, ""
+	return staticNode, "" // Default to static node.
 }
 
-// PrintRoutes logs all registered routes to the provided logger.
-// This is useful for debugging purposes, typically called when the server starts in DebugMode.
+// PrintRoutes logs all registered routes in the tree to the provided `xylium.Logger`.
+// This is primarily a debugging utility, typically called when the server starts
+// in `DebugMode` to provide visibility into the configured routing table.
+// Routes are printed with their HTTP method and full path.
 func (t *Tree) PrintRoutes(logger Logger) {
 	if logger == nil {
-		// If no logger is provided, we cannot print the routes.
-		// The caller (e.g., router_server.go) is responsible for passing a valid logger.
+		// Fallback if no logger is provided (should not happen in normal Xylium operation).
+		fmt.Println("[XYLIUM-TREE] PrintRoutes: Logger is nil, cannot print routes.")
 		return
 	}
-	logger.Printf("[XYLIUM-DEBUG] Registered Routes:")
+	// Log a header message at Debug level, as route printing is a debug activity.
+	logger.Debugf("Xylium Registered Routes (Radix Tree Structure):")
+	// Start recursive printing from the root node with an empty path prefix.
 	t.printNodeRoutesRecursive(logger, t.root, "")
 }
 
-// printNodeRoutesRecursive is a helper function to recursively traverse the tree and log routes.
-// It reconstructs the full path for display.
+// printNodeRoutesRecursive is a helper function to recursively traverse the tree
+// and log routes using the provided `xylium.Logger`.
+// It reconstructs the full path for display purposes.
+// - `logger`: The `xylium.Logger` to use for output.
+// - `n`: The current `node` being processed.
+// - `currentPathPrefix`: The accumulated path from the root to the parent of `n`.
 func (t *Tree) printNodeRoutesRecursive(logger Logger, n *node, currentPathPrefix string) {
-	// logger is assumed to be non-nil here, as it's checked by the public PrintRoutes method.
+	// Determine the display path for the current node.
 	var pathForDisplay string
-
 	if n == t.root {
-		// For the root node, the display path is simply "/".
-		// The currentPathPrefix is "" at this point.
+		// The root node itself represents the "/" path if it has handlers,
+		// or it's the base for its children (prefix is effectively empty for them).
 		pathForDisplay = "/"
 	} else {
-		// Construct the path by appending the current node's segment to the prefix from its parent.
-		if currentPathPrefix == "/" { // Avoid "//segment" if prefix is already "/".
+		// For non-root nodes, append their segment to the parent's path prefix.
+		if currentPathPrefix == "/" {
+			// If parent was root ("/"), child path is "/segment".
 			pathForDisplay = "/" + n.path
 		} else {
-			// If currentPathPrefix is empty (from root), pathForDisplay becomes "/"+n.path
-			// If currentPathPrefix is "/api", pathForDisplay becomes "/api"+"/"+n.path
+			// If parent was "/api", child path is "/api/segment".
+			// If parent was empty (direct child of root), path is "/segment".
 			pathForDisplay = currentPathPrefix + "/" + n.path
 		}
 	}
-	// Further normalize to remove any accidental double slashes. This is a safeguard.
-	// e.g., if pathForDisplay became "/api//v1", it should be "/api/v1".
-	// Note: The tree structure should generally prevent this if segments are clean.
+	// Clean up any accidental double slashes that might have formed, though logic above aims to prevent this.
 	pathForDisplay = strings.ReplaceAll(pathForDisplay, "//", "/")
-	if len(pathForDisplay) > 1 && pathForDisplay[0] == '/' && pathForDisplay[1] == '/' {
-		pathForDisplay = pathForDisplay[1:] // Handle cases like "//segment" from root
+	// Ensure root path is displayed as "/" if it became empty after cleaning.
+	if pathForDisplay == "" && n == t.root {
+		pathForDisplay = "/"
 	}
 
 
+	// If the current node has handlers, log them.
 	if len(n.handlers) > 0 {
-		// Sort methods for consistent and readable output.
+		// Sort HTTP methods for consistent and readable output.
 		methods := make([]string, 0, len(n.handlers))
 		for method := range n.handlers {
 			methods = append(methods, method)
 		}
-		sort.Strings(methods)
+		sort.Strings(methods) // Sort alphabetically (DELETE, GET, POST, ...).
 
 		for _, method := range methods {
-			// Log with fixed-width method for alignment.
-			// Ensure pathForDisplay is never empty if it has handlers.
-			// If it's the root with handlers, pathForDisplay should be "/".
-			displayPath := pathForDisplay
-			if displayPath == "" && n == t.root { // Special case for root node handler if pathForDisplay ended up empty.
-				displayPath = "/"
-			} else if displayPath == "" && n != t.root { // Should not happen for non-root nodes with handlers.
-				logger.Printf("[XYLIUM-DEBUG-WARN] Empty display path for non-root node with handlers. Node Path: %s, Prefix: %s", n.path, currentPathPrefix)
-				displayPath = "???" // Indicate an anomaly
-			}
-
-			logger.Printf("[XYLIUM-DEBUG]   %-7s %s", method, displayPath)
+			// Log the route at Debug level. Use fixed-width for method alignment for readability.
+			// Example: "  GET     /users/:id"
+			logger.Debugf("  %-7s %s", method, pathForDisplay)
 		}
 	}
 
 	// Recursively call for child nodes.
 	// The `pathForDisplay` of the current node becomes the `currentPathPrefix` for its children.
-	// If the current node is root and pathForDisplay is "/", use "" as prefix for children to avoid "//"
-	prefixForChildren := pathForDisplay
-	if n == t.root && pathForDisplay == "/" {
-		prefixForChildren = "" // For children of root, prefix is effectively empty for path joining.
-	}
-
+	// However, if the current node is the root AND its display path is "/",
+	// the prefix for its direct children should be effectively empty (or "/") to ensure
+	// paths like "/users" are formed correctly, not "//users".
+	// The logic for `pathForDisplay` above already handles this by ensuring
+	// `currentPathPrefix + "/" + child.path` forms correctly.
+	// If `pathForDisplay` is "/", passing it as `currentPathPrefix` is correct.
+	// If `n == t.root` and `pathForDisplay == "/"`, use `pathForDisplay` for children.
+	// If `n == t.root` and `pathForDisplay` was empty (then forced to "/"), still use `pathForDisplay`.
 	for _, child := range n.children {
-		t.printNodeRoutesRecursive(logger, child, prefixForChildren)
+		t.printNodeRoutesRecursive(logger, child, pathForDisplay)
 	}
 }

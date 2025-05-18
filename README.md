@@ -4,6 +4,19 @@
 
 Xylium offers an expressive and familiar API (inspired by popular frameworks like Gin/Echo/Fiber) while leveraging the raw efficiency of fasthttp. If you're looking for `fasthttp`'s speed without sacrificing development comfort, Xylium might be for you!
 
+## Table of Contents
+
+*   [✨ Key Features](#-key-features)
+*   [💡 Philosophy](#-philosophy)
+*   [🚀 Getting Started](#-getting-started)
+    *   [Prerequisites](#prerequisites)
+    *   [Installation](#installation)
+    *   [Simple Usage Example](#simple-usage-example)
+    *   [Operating Modes](#operating-modes)
+*   [📖 Documentation](#-documentation)
+*   [🛠️ Contributing](#️-contributing)
+*   [📜 License](#-license)
+
 ## ✨ Key Features
 
 *   **Blazing Fast Performance**: Built on `fasthttp`, one of Go's fastest HTTP engines. Utilizes `sync.Pool` for `Context` objects to minimize memory allocations.
@@ -12,10 +25,10 @@ Xylium offers an expressive and familiar API (inspired by popular frameworks lik
 *   **Flexible Middleware**: Apply global, route group-specific, or individual route middleware using the standard `func(next HandlerFunc) HandlerFunc` pattern. Includes common middleware like Logger, Gzip, CORS, CSRF, BasicAuth, RateLimiter, and RequestID.
 *   **Route Grouping**: Organize your routes effortlessly with path prefixes and group-scoped middleware.
 *   **Centralized Error Handling**: Handlers return an `error`, which is elegantly processed by the `GlobalErrorHandler`. Custom `HTTPError` allows full control over error responses.
-*   **Operating Modes (Debug, Test, Release)**: Configure framework behavior for different environments. Debug mode provides more verbose logging and error details.
+*   **Operating Modes (Debug, Test, Release)**: Configure framework behavior for different environments. **Debug mode is the default**, providing more verbose logging and error details. Xylium's logger is auto-configured based on these modes.
 *   **Data Binding & Validation**: Easily bind request payloads (JSON, XML, Form, Query) to Go structs and validate them using the integrated `validator/v10`.
 *   **Server Configuration Management**: Full control over `fasthttp.Server` settings via `ServerConfig`, including graceful shutdown.
-*   **Customizable Logger**: Integrate with your preferred logging solution through the `xylium.Logger` interface.
+*   **Customizable Logger**: Integrated, auto-configured logger with `c.Logger()` for request-scoped logging and `app.Logger()` for application-level logging. Can be replaced with custom `xylium.Logger` implementations.
 *   **Static File Serving**: Easy-to-use `ServeFiles` helper.
 *   **Minimalist yet Extendable**: Provides a strong foundation without too much "magic," easily extendable to fit your needs.
 
@@ -38,145 +51,102 @@ Xylium offers an expressive and familiar API (inspired by popular frameworks lik
 go get -u github.com/arwahdevops/xylium-core
 ```
 
+### Simple Usage Example
+
+Create a `main.go` file:
+
+```go
+package main
+
+import (
+	"net/http"
+	"github.com/arwahdevops/xylium-core/src/xylium"
+)
+
+func main() {
+	// Initialize Xylium.
+	// By default, Xylium starts in DebugMode.
+	// Logger is auto-configured: DebugMode (default) provides LevelDebug, caller info, and colors (if TTY).
+	app := xylium.New()
+
+	// Define a simple GET route for the root path.
+	// Responds with JSON: {"message": "Hello, Xylium!", "mode": "debug"}
+	app.GET("/", func(c *xylium.Context) error {
+		return c.JSON(http.StatusOK, xylium.M{
+			"message": "Hello, Xylium!",
+			"mode":    c.RouterMode(), // Access the current router mode
+		})
+	})
+
+	// Define a route with a path parameter.
+	// Example: GET /hello/John -> Responds with string: "Hello, John!"
+	app.GET("/hello/:name", func(c *xylium.Context) error {
+		name := c.Param("name")
+		return c.String(http.StatusOK, "Hello, %s!", name)
+	})
+	
+	listenAddr := ":8080"
+	// Use the application's logger for startup messages.
+	// It reflects the auto-configuration based on Xylium's operating mode.
+	app.Logger().Infof("Server starting on http://localhost%s (Mode: %s)", listenAddr, app.CurrentMode())
+	
+	// Start the server. app.Start() provides graceful shutdown.
+	if err := app.Start(listenAddr); err != nil {
+		app.Logger().Fatalf("Error starting server: %v", err)
+	}
+}
+```
+
+Run the application:
+
+```bash
+# Run the application (defaults to DebugMode)
+go run main.go
+
+# To run in ReleaseMode (info-level logging, no caller info/colors)
+XYLIUM_MODE=release go run main.go
+```
+
+You can then access:
+*   `http://localhost:8080/`
+*   `http://localhost:8080/hello/yourname`
+
 ### Operating Modes
 
-Xylium supports different operating modes (`debug`, `test`, `release`) which can alter its behavior, such as logging verbosity and error message details. The default mode is `release`.
+Xylium supports different operating modes (`debug`, `test`, `release`) which can alter its behavior, such as logging verbosity and error message details. **The default mode is `debug`**.
 
 You can set the mode in two ways:
 
-1.  **Environment Variable (Highest Priority at startup):**
+1.  **Environment Variable (Overrides default, but `SetMode` has higher priority):**
     Set the `XYLIUM_MODE` environment variable before running your application:
     ```bash
-    XYLIUM_MODE=debug go run main.go
+    XYLIUM_MODE=release go run main.go
     ```
-2.  **Programmatically (Before Router Initialization):**
-    Call `xylium.SetMode()` before creating your router instance:
+2.  **Programmatically (Highest Priority, before Router Initialization):**
+    Call `xylium.SetMode()` before creating your Xylium application instance:
     ```go
     package main
 
     import "github.com/arwahdevops/xylium-core/src/xylium" // Adjust import path
 
     func main() {
-        xylium.SetMode(xylium.DebugMode) // or xylium.TestMode, xylium.ReleaseMode
+        xylium.SetMode(xylium.ReleaseMode) // or xylium.TestMode
         
-        // ... initialize your Xylium router ...
-        r := xylium.New() 
-        // ...
+        app := xylium.New() 
+        // ... your application logic ...
+        // app.CurrentMode() will now be "release"
     }
     ```
-    The router will then operate in the specified mode. You can check the current mode using `router.CurrentMode()`.
-
-### Simple Usage Example
-
-```go
-package main
-
-import (
-	"log"
-	"net/http"
-	"os"
-	// "time" // Not used in this minimal example, but often needed
-
-	"github.com/arwahdevops/xylium-core/src/xylium" // Adjust import path as per your project structure
-)
-
-func main() {
-	// Optionally set the mode (defaults to "release" or XYLIUM_MODE env var)
-	// xylium.SetMode(xylium.DebugMode)
-
-	// Use Go's standard logger (satisfies xylium.Logger)
-	appLogger := log.New(os.Stdout, "[MyAPP] ", log.LstdFlags)
-
-	// Server configuration
-	cfg := xylium.DefaultServerConfig()
-	cfg.Logger = appLogger
-	cfg.Name = "MyAwesomeAPI/1.0"
-
-	// Create a new router
-	r := xylium.NewWithConfig(cfg)
-	appLogger.Printf("Xylium running in mode: %s", r.CurrentMode())
-
-
-	// Global middleware
-	r.Use(func(next xylium.HandlerFunc) xylium.HandlerFunc {
-		return func(c *xylium.Context) error {
-			c.SetHeader("X-Powered-By", "Xylium")
-			// Example of mode-dependent behavior in middleware
-			if c.RouterMode() == xylium.DebugMode {
-				log.Printf("[DEBUG] Request to: %s %s", c.Method(), c.Path())
-			}
-			return next(c)
-		}
-	})
-
-	// Simple route
-	r.GET("/ping", func(c *xylium.Context) error {
-		return c.JSON(http.StatusOK, xylium.M{"message": "pong", "mode": c.RouterMode()})
-	})
-
-	// Route with parameters
-	r.GET("/hello/:name", func(c *xylium.Context) error {
-		name := c.Param("name")
-		return c.String(http.StatusOK, "Hello, %s! (Mode: %s)", name, c.RouterMode())
-	})
-
-	// Route group
-	apiV1 := r.Group("/api/v1")
-	{
-		// Group-specific middleware
-		apiV1.Use(func(next xylium.HandlerFunc) xylium.HandlerFunc {
-			return func(c *xylium.Context) error {
-				// Example: simple authentication check
-				if c.Header("Authorization") != "Bearer mysecrettoken" {
-					// In DebugMode, the GlobalErrorHandler might provide more detailed error info.
-					return xylium.NewHTTPError(http.StatusUnauthorized, "Unauthorized access to API v1")
-				}
-				return next(c)
-			}
-		})
-
-		apiV1.GET("/users", func(c *xylium.Context) error {
-			users := []xylium.M{
-				{"id": "1", "name": "Alice"},
-				{"id": "2", "name": "Bob"},
-			}
-			return c.JSON(http.StatusOK, users)
-		})
-	}
-
-	// Data binding and validation
-	type CreateUserRequest struct {
-		Username string `json:"username" validate:"required,min=3"`
-		Email    string `json:"email" validate:"required,email"`
-	}
-
-	r.POST("/users", func(c *xylium.Context) error {
-		var req CreateUserRequest
-		if err := c.BindAndValidate(&req); err != nil {
-			// Error will automatically be an HTTPError 400 with validation details.
-			// The GlobalErrorHandler might show more info in DebugMode.
-			return err
-		}
-		// Process new user...
-		return c.JSON(http.StatusCreated, xylium.M{
-			"message": "User created",
-			"user":    req,
-		})
-	})
-
-	// Start the server
-	addr := ":8080"
-	appLogger.Printf("Xylium server starting on %s", addr)
-	// Use ListenAndServeGracefully for better shutdown handling
-	if err := r.ListenAndServeGracefully(addr); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
-	}
-}
-```
+    The application will then operate in the specified mode. You can check the current mode using `app.CurrentMode()`.
 
 ## 📖 Documentation
 
-For now, please refer to the example files in the `examples/` directory and the source code comments for understanding API usage.
+For more detailed examples and API usage, please refer to:
+*   The files in the `examples/` directory within this repository.
+*   The `Docs/Minimal.md` file for common use-case syntax.
+*   Source code comments for in-depth understanding of specific functions.
+
+(Full documentation website coming soon!)
 
 ## 🛠️ Contributing
 
