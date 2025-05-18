@@ -1,4 +1,3 @@
-// src/xylium/middleware_ratelimiter.go
 package xylium
 
 import (

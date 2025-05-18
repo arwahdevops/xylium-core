@@ -1,4 +1,3 @@
-// src/xylium/router_server.go
 package xylium
 
 import (
@@ -93,39 +92,37 @@ func DefaultServerConfig() ServerConfig {
 // loggerAdapter adapts a xylium.Logger to the fasthttp.Logger interface,
 // which only requires a Printf method.
 type loggerAdapter struct {
-	internalLogger Logger // Holds the xylium.Logger instance.
+	internalLogger Logger // Holds the xylium.Logger instance. Assumed non-nil.
 }
 
 // Printf implements the fasthttp.Logger interface by forwarding messages
 // to the internal Xylium logger's Infof method.
 // This treats internal fasthttp server messages as informational.
 func (la *loggerAdapter) Printf(format string, args ...interface{}) {
+	// internalLogger is expected to be non-nil due to router.NewWithConfig() guarantees.
+	// The 'if la.internalLogger != nil' check is highly defensive.
 	if la.internalLogger != nil {
 		la.internalLogger.Infof(format, args...) // Log fasthttp internal messages as INFO.
 	} else {
-		// Absolute fallback if internalLogger is somehow nil. This should not happen
-		// if the router and server config are initialized correctly.
-		log.Printf("loggerAdapter: internalLogger is nil. Fallback log: "+format, args...)
+		// This fallback should ideally never be reached in a correctly initialized Xylium app.
+		log.Printf("[XYLIUM-LOGGER-ADAPTER-FALLBACK] "+format, args...)
 	}
 }
 
 // buildFasthttpServer constructs a new fasthttp.Server instance based on the
 // Router's ServerConfig. It ensures a compatible logger is passed to fasthttp.
 func (r *Router) buildFasthttpServer() *fasthttp.Server {
-	var fasthttpCompatibleLogger fasthttp.Logger
+	// r.serverConfig.Logger is guaranteed to be non-nil by router.NewWithConfig().
+	// We always use the adapter to bridge xylium.Logger to fasthttp.Logger.
+	fasthttpCompatibleLogger := &loggerAdapter{internalLogger: r.serverConfig.Logger}
 
-	// r.Logger() (which is r.serverConfig.Logger) is guaranteed to be non-nil
-	// by the router.NewWithConfig() logic.
-	// We always use the adapter because fasthttp.Logger only has Printf,
-	// while our xylium.Logger is richer.
-	if r.serverConfig.Logger != nil {
-		fasthttpCompatibleLogger = &loggerAdapter{internalLogger: r.serverConfig.Logger}
-	} else {
-		// This is a defensive case, should not be reached if router is initialized correctly.
-		// Create a new default logger and wrap it.
-		emergencyLogger := NewDefaultLogger()
-		emergencyLogger.Warnf("Router.serverConfig.Logger was nil during buildFasthttpServer. This is unexpected. Using an emergency DefaultLogger for fasthttp.")
-		fasthttpCompatibleLogger = &loggerAdapter{internalLogger: emergencyLogger}
+	// In DebugMode, log key server configurations being applied.
+	if r.CurrentMode() == DebugMode {
+		cfgLog := r.Logger().WithFields(M{"component": "fasthttp-server-builder"})
+		cfgLog.Debugf("Building fasthttp.Server with Name: '%s'", r.serverConfig.Name)
+		cfgLog.Debugf("ReadTimeout: %v, WriteTimeout: %v, IdleTimeout: %v", r.serverConfig.ReadTimeout, r.serverConfig.WriteTimeout, r.serverConfig.IdleTimeout)
+		cfgLog.Debugf("MaxRequestBodySize: %d, Concurrency: %d", r.serverConfig.MaxRequestBodySize, r.serverConfig.Concurrency)
+		cfgLog.Debugf("CloseOnShutdown: %t, ShutdownTimeout: %v", r.serverConfig.CloseOnShutdown, r.serverConfig.ShutdownTimeout)
 	}
 
 	return &fasthttp.Server{
