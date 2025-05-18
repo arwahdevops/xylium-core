@@ -1,12 +1,12 @@
 package xylium
 
 import (
-	"log"      // Used by fasthttp as a fallback if its logger is nil.
-	"net"      // For net.Conn, fasthttp.ConnState.
-	"os"       // For os.Signal.
+	"log"       // Used by fasthttp as a fallback if its logger is nil.
+	"net"       // For net.Conn, fasthttp.ConnState.
+	"os"        // For os.Signal.
 	"os/signal" // For graceful shutdown signal handling.
-	"syscall"  // For syscall.SIGINT, syscall.SIGTERM.
-	"time"     // For timeouts.
+	"syscall"   // For syscall.SIGINT, syscall.SIGTERM.
+	"time"      // For timeouts.
 
 	"github.com/valyala/fasthttp" // The underlying HTTP server.
 )
@@ -31,7 +31,7 @@ type ServerConfig struct {
 	NoDefaultDate                 bool
 	NoDefaultContentType          bool
 	KeepHijackedConns             bool
-	CloseOnShutdown               bool        // fasthttp's option to close connections on shutdown.
+	CloseOnShutdown               bool // fasthttp's option to close connections on shutdown.
 	StreamRequestBody             bool
 	Logger                        Logger        // Xylium logger.
 	LoggerConfig                  *LoggerConfig // Detailed config for DefaultLogger if used.
@@ -43,17 +43,17 @@ type ServerConfig struct {
 func DefaultServerConfig() ServerConfig {
 	defaultLogCfg := DefaultLoggerConfig() // Get default logger configuration.
 	return ServerConfig{
-		Name:                 "Xylium Server",
-		ReadTimeout:          60 * time.Second,
-		WriteTimeout:         60 * time.Second,
-		IdleTimeout:          120 * time.Second,
-		MaxRequestBodySize:   4 * 1024 * 1024, // 4MB
-		Concurrency:          fasthttp.DefaultConcurrency,
-		ReduceMemoryUsage:    false,
-		Logger:               nil,            // Will be initialized in router.NewWithConfig if nil.
-		LoggerConfig:         &defaultLogCfg, // Provide default logger config.
-		CloseOnShutdown:      true,           // Default fasthttp behavior.
-		ShutdownTimeout:      15 * time.Second, // Xylium's graceful shutdown timeout.
+		Name:               "Xylium Server",
+		ReadTimeout:        60 * time.Second,
+		WriteTimeout:       60 * time.Second,
+		IdleTimeout:        120 * time.Second,
+		MaxRequestBodySize: 4 * 1024 * 1024, // 4MB
+		Concurrency:        fasthttp.DefaultConcurrency,
+		ReduceMemoryUsage:  false,
+		Logger:             nil,              // Will be initialized in router.NewWithConfig if nil.
+		LoggerConfig:       &defaultLogCfg,   // Provide default logger config.
+		CloseOnShutdown:    true,             // Default fasthttp behavior.
+		ShutdownTimeout:    15 * time.Second, // Xylium's graceful shutdown timeout.
 	}
 }
 
@@ -278,20 +278,27 @@ func (r *Router) ListenAndServeTLSGracefully(addr, certFile, keyFile string) err
 
 	select {
 	case err := <-serverErrors:
-		if err != nil { currentLogger.Errorf("HTTPS Server failed: %v", err) }
+		if err != nil {
+			currentLogger.Errorf("HTTPS Server failed: %v", err)
+		}
 		r.closeInternalResources()
 		return err
 	case sig := <-shutdownChan:
 		currentLogger.Infof("Shutdown signal '%s' received for HTTPS. Shutting down...", sig)
 		shutdownTimeout := r.serverConfig.ShutdownTimeout
-		if shutdownTimeout <= 0 { shutdownTimeout = 15 * time.Second; currentLogger.Warnf("Defaulting HTTPS ShutdownTimeout: %s", shutdownTimeout) }
+		if shutdownTimeout <= 0 {
+			shutdownTimeout = 15 * time.Second
+			currentLogger.Warnf("Defaulting HTTPS ShutdownTimeout: %s", shutdownTimeout)
+		}
 
 		shutdownComplete := make(chan struct{})
 		go func() { defer close(shutdownComplete); server.Shutdown() }() // Simplified: let Shutdown handle its own error logging via fasthttp logger.
 
 		select {
-		case <-shutdownComplete: currentLogger.Info("HTTPS Server gracefully stopped.")
-		case <-time.After(shutdownTimeout): currentLogger.Warnf("HTTPS Server shutdown timed out after %s.", shutdownTimeout)
+		case <-shutdownComplete:
+			currentLogger.Info("HTTPS Server gracefully stopped.")
+		case <-time.After(shutdownTimeout):
+			currentLogger.Warnf("HTTPS Server shutdown timed out after %s.", shutdownTimeout)
 		}
 		r.closeInternalResources()
 		currentLogger.Info("Xylium HTTPS application shutdown complete.")
@@ -322,20 +329,27 @@ func (r *Router) ListenAndServeTLSEmbedGracefully(addr string, certData, keyData
 
 	select {
 	case err := <-serverErrors:
-		if err != nil { currentLogger.Errorf("Embedded HTTPS Server failed: %v", err) }
+		if err != nil {
+			currentLogger.Errorf("Embedded HTTPS Server failed: %v", err)
+		}
 		r.closeInternalResources()
 		return err
 	case sig := <-shutdownChan:
 		currentLogger.Infof("Shutdown signal '%s' for embedded HTTPS. Shutting down...", sig)
 		shutdownTimeout := r.serverConfig.ShutdownTimeout
-		if shutdownTimeout <= 0 { shutdownTimeout = 15 * time.Second; currentLogger.Warnf("Defaulting embedded HTTPS ShutdownTimeout: %s", shutdownTimeout) }
+		if shutdownTimeout <= 0 {
+			shutdownTimeout = 15 * time.Second
+			currentLogger.Warnf("Defaulting embedded HTTPS ShutdownTimeout: %s", shutdownTimeout)
+		}
 
 		shutdownComplete := make(chan struct{})
 		go func() { defer close(shutdownComplete); server.Shutdown() }()
 
 		select {
-		case <-shutdownComplete: currentLogger.Info("Embedded HTTPS Server gracefully stopped.")
-		case <-time.After(shutdownTimeout): currentLogger.Warnf("Embedded HTTPS Server shutdown timed out after %s.", shutdownTimeout)
+		case <-shutdownComplete:
+			currentLogger.Info("Embedded HTTPS Server gracefully stopped.")
+		case <-time.After(shutdownTimeout):
+			currentLogger.Warnf("Embedded HTTPS Server shutdown timed out after %s.", shutdownTimeout)
 		}
 		r.closeInternalResources()
 		currentLogger.Info("Xylium embedded HTTPS application shutdown complete.")

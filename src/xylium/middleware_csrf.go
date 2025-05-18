@@ -1,13 +1,13 @@
 package xylium
 
 import (
-	"crypto/rand"    // For cryptographically secure random token generation.
-	"crypto/subtle"  // For constant-time string comparison.
-	"encoding/base64"  // For encoding the token into a URL/header-safe string.
-	"errors"         // For defining custom error types.
-	"fmt"            // For string formatting in errors and logs.
-	"strings"        // For string manipulation (e.g., parsing TokenLookup, method checking).
-	"time"           // For cookie expiration management.
+	"crypto/rand"     // For cryptographically secure random token generation.
+	"crypto/subtle"   // For constant-time string comparison.
+	"encoding/base64" // For encoding the token into a URL/header-safe string.
+	"errors"          // For defining custom error types.
+	"fmt"             // For string formatting in errors and logs.
+	"strings"         // For string manipulation (e.g., parsing TokenLookup, method checking).
+	"time"            // For cookie expiration management.
 
 	"github.com/valyala/fasthttp" // For fasthttp.Cookie and related constants.
 )
@@ -78,16 +78,16 @@ var ErrorCSRFTokenInvalid = errors.New("xylium: invalid, missing, or mismatched 
 
 // DefaultCSRFConfig provides sensible default configurations for CSRF protection.
 var DefaultCSRFConfig = CSRFConfig{
-	TokenLength:    32, // 256 bits, strong default.
-	CookieName:     "_csrf_token",
-	CookiePath:     "/", // Applies to the entire domain.
-	CookieMaxAge:   12 * time.Hour,
-	CookieSecure:   true,  // Secure by default; override for local HTTP dev.
-	CookieHTTPOnly: false, // Allows JS to read for SPAs (Double Submit Cookie pattern).
-	CookieSameSite: fasthttp.CookieSameSiteLaxMode,
-	HeaderName:     "X-CSRF-Token",
-	FormFieldName:  "_csrf",
-	SafeMethods:    []string{MethodGet, MethodHead, MethodOptions, MethodTrace},
+	TokenLength:     32, // 256 bits, strong default.
+	CookieName:      "_csrf_token",
+	CookiePath:      "/", // Applies to the entire domain.
+	CookieMaxAge:    12 * time.Hour,
+	CookieSecure:    true,  // Secure by default; override for local HTTP dev.
+	CookieHTTPOnly:  false, // Allows JS to read for SPAs (Double Submit Cookie pattern).
+	CookieSameSite:  fasthttp.CookieSameSiteLaxMode,
+	HeaderName:      "X-CSRF-Token",
+	FormFieldName:   "_csrf",
+	SafeMethods:     []string{MethodGet, MethodHead, MethodOptions, MethodTrace},
 	ContextTokenKey: "csrf_token", // Key for accessing the token in c.store.
 	// TokenLookup is not set here; it's derived in CSRFWithConfig if Extractor is nil and user doesn't provide TokenLookup.
 }
@@ -102,18 +102,36 @@ func CSRF() Middleware {
 // and the core token validation logic using constant-time comparison.
 func CSRFWithConfig(config CSRFConfig) Middleware {
 	// --- Normalize and Validate Configuration ---
-	if config.TokenLength <= 0 { config.TokenLength = DefaultCSRFConfig.TokenLength }
-	if config.CookieName == "" { config.CookieName = DefaultCSRFConfig.CookieName }
-	if config.CookiePath == "" { config.CookiePath = DefaultCSRFConfig.CookiePath }
-	if config.CookieMaxAge <= 0 { config.CookieMaxAge = DefaultCSRFConfig.CookieMaxAge }
+	if config.TokenLength <= 0 {
+		config.TokenLength = DefaultCSRFConfig.TokenLength
+	}
+	if config.CookieName == "" {
+		config.CookieName = DefaultCSRFConfig.CookieName
+	}
+	if config.CookiePath == "" {
+		config.CookiePath = DefaultCSRFConfig.CookiePath
+	}
+	if config.CookieMaxAge <= 0 {
+		config.CookieMaxAge = DefaultCSRFConfig.CookieMaxAge
+	}
 	// For booleans like CookieSecure, CookieHTTPOnly, the zero value is 'false'.
 	// If not explicitly set by user, they rely on DefaultCSRFConfig values if this func is called via CSRF().
 	// If user calls CSRFWithConfig(CSRFConfig{...}), their explicit false/true is honored.
-	if config.CookieSameSite == 0 { config.CookieSameSite = DefaultCSRFConfig.CookieSameSite } // 0 is fasthttp.CookieSameSiteDefaultMode
-	if config.HeaderName == "" { config.HeaderName = DefaultCSRFConfig.HeaderName }
-	if config.FormFieldName == "" { config.FormFieldName = DefaultCSRFConfig.FormFieldName }
-	if len(config.SafeMethods) == 0 { config.SafeMethods = DefaultCSRFConfig.SafeMethods }
-	if config.ContextTokenKey == "" { config.ContextTokenKey = DefaultCSRFConfig.ContextTokenKey }
+	if config.CookieSameSite == 0 {
+		config.CookieSameSite = DefaultCSRFConfig.CookieSameSite
+	} // 0 is fasthttp.CookieSameSiteDefaultMode
+	if config.HeaderName == "" {
+		config.HeaderName = DefaultCSRFConfig.HeaderName
+	}
+	if config.FormFieldName == "" {
+		config.FormFieldName = DefaultCSRFConfig.FormFieldName
+	}
+	if len(config.SafeMethods) == 0 {
+		config.SafeMethods = DefaultCSRFConfig.SafeMethods
+	}
+	if config.ContextTokenKey == "" {
+		config.ContextTokenKey = DefaultCSRFConfig.ContextTokenKey
+	}
 
 	// Build TokenLookup string if it's empty and no custom Extractor is provided.
 	// The default lookup order is header, then form.
@@ -135,7 +153,9 @@ func CSRFWithConfig(config CSRFConfig) Middleware {
 		parts := strings.Split(config.TokenLookup, ",")
 		for _, part := range parts {
 			trimmedPart := strings.TrimSpace(part)
-			if trimmedPart == "" { continue }
+			if trimmedPart == "" {
+				continue
+			}
 			segments := strings.SplitN(trimmedPart, ":", 2)
 			if len(segments) != 2 || segments[0] == "" || segments[1] == "" {
 				panic(fmt.Errorf("xylium: invalid CSRF TokenLookup format in part: '%s'. Expected 'source:name'.", trimmedPart))
@@ -169,7 +189,9 @@ func CSRFWithConfig(config CSRFConfig) Middleware {
 			var internalCause error = ErrorCSRFTokenInvalid // Default internal error.
 			// Check if a more specific error was stored in the context during validation.
 			if errVal, exists := c.Get("csrf_validation_error"); exists {
-				if e, ok := errVal.(error); ok { internalCause = e }
+				if e, ok := errVal.(error); ok {
+					internalCause = e
+				}
 			}
 			return NewHTTPError(StatusForbidden, "CSRF token validation failed. Access denied.").WithInternal(internalCause)
 		}

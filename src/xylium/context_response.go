@@ -133,10 +133,11 @@ func (c *Context) HTML(code int, name string, data interface{}) error {
 }
 
 // File sends a local file as the response body.
-// - `filepathToServe` is the path to the file on the server's filesystem.
-// - It performs security checks: ensures the path is valid, the file exists, and is not a directory.
-// - It uses `fasthttp.ServeFile` for efficient file serving, which also sets appropriate
-//   Content-Type based on file extension and handles `If-Modified-Since` requests.
+//   - `filepathToServe` is the path to the file on the server's filesystem.
+//   - It performs security checks: ensures the path is valid, the file exists, and is not a directory.
+//   - It uses `fasthttp.ServeFile` for efficient file serving, which also sets appropriate
+//     Content-Type based on file extension and handles `If-Modified-Since` requests.
+//
 // Returns an `*HTTPError` if the file is not found, is a directory, or if there's an access error.
 // Otherwise, returns nil as `fasthttp.ServeFile` handles the response.
 func (c *Context) File(filepathToServe string) error {
@@ -189,9 +190,10 @@ func (c *Context) Attachment(filepathToServe string, downloadFilename string) er
 }
 
 // Redirect sends an HTTP redirect response (3xx) to a new `location` with the given `code`.
-// - `location`: The URL to redirect to.
-// - `code`: The HTTP redirect status code (e.g., `StatusFound` (302), `StatusMovedPermanently` (301)).
-//   If an invalid or non-redirect code is given, it defaults to `StatusFound` (302).
+//   - `location`: The URL to redirect to.
+//   - `code`: The HTTP redirect status code (e.g., `StatusFound` (302), `StatusMovedPermanently` (301)).
+//     If an invalid or non-redirect code is given, it defaults to `StatusFound` (302).
+//
 // Returns nil as `fasthttp.RequestCtx.Redirect` handles sending the response.
 func (c *Context) Redirect(location string, code int) error {
 	// Validate redirect code to ensure it's a 3xx status.
@@ -201,7 +203,7 @@ func (c *Context) Redirect(location string, code int) error {
 		code = StatusFound // Default to 302 Found if an unsuitable code is provided.
 	}
 	c.Ctx.Redirect(location, code) // fasthttp handles setting Location header and status.
-	return nil // Redirect itself doesn't produce an error for the handler chain.
+	return nil                     // Redirect itself doesn't produce an error for the handler chain.
 }
 
 // Error sends an error response using `fasthttp.RequestCtx.Error`.
@@ -221,12 +223,12 @@ func (c *Context) Error(message string, code int) error {
 // operation where no body needs to be returned, though 204 is more idiomatic for "no content").
 // Returns nil as the response is fully handled.
 func (c *Context) NoContent(code int) error {
-	c.Status(code)               // Set the desired status code.
-	c.Ctx.Response.ResetBody()   // Ensure no body is sent.
+	c.Status(code)             // Set the desired status code.
+	c.Ctx.Response.ResetBody() // Ensure no body is sent.
 	// Content-Type is not strictly necessary for 204 but fasthttp might set one by default.
 	// To be explicit about no content type for 204:
 	if code == StatusNoContent {
-	    c.Ctx.Response.Header.Del("Content-Type")
+		c.Ctx.Response.Header.Del("Content-Type")
 	}
 	return nil
 }

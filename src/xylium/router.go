@@ -43,9 +43,9 @@ type Router struct {
 	// If not set, a default handler is used.
 	GlobalErrorHandler HandlerFunc
 
-	serverConfig            ServerConfig // Configuration for the underlying fasthttp.Server.
-	HTMLRenderer            HTMLRenderer // Optional HTML template renderer.
-	instanceMode            string       // Operating mode (e.g., "debug", "release") of this router instance.
+	serverConfig            ServerConfig   // Configuration for the underlying fasthttp.Server.
+	HTMLRenderer            HTMLRenderer   // Optional HTML template renderer.
+	instanceMode            string         // Operating mode (e.g., "debug", "release") of this router instance.
 	internalRateLimitStores []LimiterStore // Stores internally created rate limiter stores that need closing on shutdown.
 }
 
@@ -77,8 +77,12 @@ func NewWithConfig(config ServerConfig) *Router {
 		if config.LoggerConfig != nil {     // If user provided LoggerConfig, use its values as the base.
 			userProvidedLogCfg := *config.LoggerConfig
 			// Merge: take from userProvidedLogCfg if set, otherwise keep DefaultLoggerConfig values.
-			if userProvidedLogCfg.Output != nil { baseLogCfg.Output = userProvidedLogCfg.Output }
-			if userProvidedLogCfg.Formatter != "" { baseLogCfg.Formatter = userProvidedLogCfg.Formatter }
+			if userProvidedLogCfg.Output != nil {
+				baseLogCfg.Output = userProvidedLogCfg.Output
+			}
+			if userProvidedLogCfg.Formatter != "" {
+				baseLogCfg.Formatter = userProvidedLogCfg.Formatter
+			}
 			// For Level, ShowCaller, UseColor, these will be primarily driven by effectiveMode,
 			// but we honor user's explicit config if it's set.
 			baseLogCfg.Level = userProvidedLogCfg.Level
@@ -169,7 +173,9 @@ func (r *Router) addInternalStore(store LimiterStore) {
 
 // addRoute is an internal helper to register a new route.
 func (r *Router) addRoute(method, path string, handler HandlerFunc, middlewares ...Middleware) {
-	if path == "" { path = "/" }
+	if path == "" {
+		path = "/"
+	}
 	if path[0] != '/' {
 		panic("xylium: path must begin with '/' (e.g., \"/users\")")
 	}
@@ -177,13 +183,27 @@ func (r *Router) addRoute(method, path string, handler HandlerFunc, middlewares 
 }
 
 // --- HTTP Method Route Registration ---
-func (r *Router) GET(path string, handler HandlerFunc, middlewares ...Middleware) { r.addRoute(MethodGet, path, handler, middlewares...) }
-func (r *Router) POST(path string, handler HandlerFunc, middlewares ...Middleware)    { r.addRoute(MethodPost, path, handler, middlewares...) }
-func (r *Router) PUT(path string, handler HandlerFunc, middlewares ...Middleware)     { r.addRoute(MethodPut, path, handler, middlewares...) }
-func (r *Router) DELETE(path string, handler HandlerFunc, middlewares ...Middleware)  { r.addRoute(MethodDelete, path, handler, middlewares...) }
-func (r *Router) PATCH(path string, handler HandlerFunc, middlewares ...Middleware)   { r.addRoute(MethodPatch, path, handler, middlewares...) }
-func (r *Router) HEAD(path string, handler HandlerFunc, middlewares ...Middleware)    { r.addRoute(MethodHead, path, handler, middlewares...) }
-func (r *Router) OPTIONS(path string, handler HandlerFunc, middlewares ...Middleware) { r.addRoute(MethodOptions, path, handler, middlewares...) }
+func (r *Router) GET(path string, handler HandlerFunc, middlewares ...Middleware) {
+	r.addRoute(MethodGet, path, handler, middlewares...)
+}
+func (r *Router) POST(path string, handler HandlerFunc, middlewares ...Middleware) {
+	r.addRoute(MethodPost, path, handler, middlewares...)
+}
+func (r *Router) PUT(path string, handler HandlerFunc, middlewares ...Middleware) {
+	r.addRoute(MethodPut, path, handler, middlewares...)
+}
+func (r *Router) DELETE(path string, handler HandlerFunc, middlewares ...Middleware) {
+	r.addRoute(MethodDelete, path, handler, middlewares...)
+}
+func (r *Router) PATCH(path string, handler HandlerFunc, middlewares ...Middleware) {
+	r.addRoute(MethodPatch, path, handler, middlewares...)
+}
+func (r *Router) HEAD(path string, handler HandlerFunc, middlewares ...Middleware) {
+	r.addRoute(MethodHead, path, handler, middlewares...)
+}
+func (r *Router) OPTIONS(path string, handler HandlerFunc, middlewares ...Middleware) {
+	r.addRoute(MethodOptions, path, handler, middlewares...)
+}
 
 // Handler is the core fasthttp.RequestHandlerFunc for the Xylium router.
 func (r *Router) Handler(originalFasthttpCtx *fasthttp.RequestCtx) {
@@ -310,7 +330,7 @@ func (r *Router) ServeFiles(urlPathPrefix string, fileSystemRoot string) {
 		IndexNames:         []string{"index.html"},
 		GenerateIndexPages: false, // Security: disable directory listing.
 		AcceptByteRange:    true,
-		Compress:           true,  // Enable fasthttp's compression for static files.
+		Compress:           true, // Enable fasthttp's compression for static files.
 		PathNotFound: func(originalFasthttpCtx *fasthttp.RequestCtx) {
 			errorMsg := M{"error": "The requested static asset was not found."}
 			originalFasthttpCtx.SetStatusCode(StatusNotFound)
@@ -339,11 +359,11 @@ func (r *Router) ServeFiles(urlPathPrefix string, fileSystemRoot string) {
 			pathForFasthttpFS = "/" + pathForFasthttpFS
 		}
 
-		originalURI := c.Ctx.Request.RequestURI() // Save for restoration.
+		originalURI := c.Ctx.Request.RequestURI()      // Save for restoration.
 		c.Ctx.Request.SetRequestURI(pathForFasthttpFS) // fasthttp.FS uses RequestURI.
 		fileServerHandler(c.Ctx)                       // Delegate to fasthttp.
 		c.Ctx.Request.SetRequestURIBytes(originalURI)  // Restore original URI.
-		return nil // Response handled by fasthttp.FS.
+		return nil                                     // Response handled by fasthttp.FS.
 	})
 }
 
@@ -390,7 +410,9 @@ func (rg *RouteGroup) addRoute(method, relativePath string, handler HandlerFunc,
 		}
 	}
 	fullPath := rg.prefix + pathSegment
-	if fullPath == "" { fullPath = "/" } // Ensure root path for Group("").GET("",...)
+	if fullPath == "" {
+		fullPath = "/"
+	} // Ensure root path for Group("").GET("",...)
 
 	allApplicableMiddleware := make([]Middleware, 0, len(rg.middleware)+len(middlewares))
 	allApplicableMiddleware = append(allApplicableMiddleware, rg.middleware...)
@@ -399,13 +421,27 @@ func (rg *RouteGroup) addRoute(method, relativePath string, handler HandlerFunc,
 }
 
 // --- HTTP Method Registrations for RouteGroup ---
-func (rg *RouteGroup) GET(relativePath string, handler HandlerFunc, middlewares ...Middleware)     { rg.addRoute(MethodGet, relativePath, handler, middlewares...) }
-func (rg *RouteGroup) POST(relativePath string, handler HandlerFunc, middlewares ...Middleware)    { rg.addRoute(MethodPost, relativePath, handler, middlewares...) }
-func (rg *RouteGroup) PUT(relativePath string, handler HandlerFunc, middlewares ...Middleware)     { rg.addRoute(MethodPut, relativePath, handler, middlewares...) }
-func (rg *RouteGroup) DELETE(relativePath string, handler HandlerFunc, middlewares ...Middleware)  { rg.addRoute(MethodDelete, relativePath, handler, middlewares...) }
-func (rg *RouteGroup) PATCH(relativePath string, handler HandlerFunc, middlewares ...Middleware)   { rg.addRoute(MethodPatch, relativePath, handler, middlewares...) }
-func (rg *RouteGroup) HEAD(relativePath string, handler HandlerFunc, middlewares ...Middleware)    { rg.addRoute(MethodHead, relativePath, handler, middlewares...) }
-func (rg *RouteGroup) OPTIONS(relativePath string, handler HandlerFunc, middlewares ...Middleware) { rg.addRoute(MethodOptions, relativePath, handler, middlewares...) }
+func (rg *RouteGroup) GET(relativePath string, handler HandlerFunc, middlewares ...Middleware) {
+	rg.addRoute(MethodGet, relativePath, handler, middlewares...)
+}
+func (rg *RouteGroup) POST(relativePath string, handler HandlerFunc, middlewares ...Middleware) {
+	rg.addRoute(MethodPost, relativePath, handler, middlewares...)
+}
+func (rg *RouteGroup) PUT(relativePath string, handler HandlerFunc, middlewares ...Middleware) {
+	rg.addRoute(MethodPut, relativePath, handler, middlewares...)
+}
+func (rg *RouteGroup) DELETE(relativePath string, handler HandlerFunc, middlewares ...Middleware) {
+	rg.addRoute(MethodDelete, relativePath, handler, middlewares...)
+}
+func (rg *RouteGroup) PATCH(relativePath string, handler HandlerFunc, middlewares ...Middleware) {
+	rg.addRoute(MethodPatch, relativePath, handler, middlewares...)
+}
+func (rg *RouteGroup) HEAD(relativePath string, handler HandlerFunc, middlewares ...Middleware) {
+	rg.addRoute(MethodHead, relativePath, handler, middlewares...)
+}
+func (rg *RouteGroup) OPTIONS(relativePath string, handler HandlerFunc, middlewares ...Middleware) {
+	rg.addRoute(MethodOptions, relativePath, handler, middlewares...)
+}
 
 // Group creates a new sub-RouteGroup.
 func (rg *RouteGroup) Group(relativePathPrefix string, middlewares ...Middleware) *RouteGroup {
@@ -415,11 +451,17 @@ func (rg *RouteGroup) Group(relativePathPrefix string, middlewares ...Middleware
 	} else if relativePathPrefix == "/" {
 		// If parent is root or "/", child prefix "/" means new prefix is just "/"
 		// If parent is "/api", child prefix "/" means new prefix is "/api" (no double slash)
-		if rg.prefix == "" || rg.prefix == "/" { pathSegment = "/" } else { pathSegment = "" }
+		if rg.prefix == "" || rg.prefix == "/" {
+			pathSegment = "/"
+		} else {
+			pathSegment = ""
+		}
 	}
 
 	newFullPrefix := rg.prefix + pathSegment
-	if newFullPrefix == "" { newFullPrefix = "/" }
+	if newFullPrefix == "" {
+		newFullPrefix = "/"
+	}
 
 	combinedMiddleware := make([]Middleware, 0, len(rg.middleware)+len(middlewares))
 	combinedMiddleware = append(combinedMiddleware, rg.middleware...)

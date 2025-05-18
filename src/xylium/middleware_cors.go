@@ -102,7 +102,7 @@ func CORSWithConfig(config CORSConfig) Middleware {
 	// --- The Middleware Function ---
 	return func(next HandlerFunc) HandlerFunc {
 		return func(c *Context) error {
-			logger := c.Logger() // Get request-scoped logger for contextual logging.
+			logger := c.Logger()                // Get request-scoped logger for contextual logging.
 			requestOrigin := c.Header("Origin") // Get the Origin header from the incoming request.
 
 			// If there's no Origin header, it's typically not a CORS request (or a non-browser client).
@@ -159,7 +159,6 @@ func CORSWithConfig(config CORSConfig) Middleware {
 					}
 				}
 			}
-
 
 			// If no allowed origin could be determined (neither wildcard nor exact match was suitable),
 			// then this origin is not permitted. For security, do not send any ACAO header.
@@ -228,7 +227,6 @@ func CORSWithConfig(config CORSConfig) Middleware {
 			c.SetHeader("Access-Control-Allow-Origin", allowedOriginValue)
 			// Always set "Vary: Origin" for actual requests too, as the ACAO header might change.
 			c.SetHeader("Vary", "Origin")
-
 
 			// Set "Access-Control-Allow-Credentials" if configured.
 			if config.AllowCredentials {

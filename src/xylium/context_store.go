@@ -18,7 +18,7 @@ func (c *Context) Set(key string, value interface{}) {
 		c.store = make(map[string]interface{})
 	}
 	c.store[key] = value
-	c.mu.Unlock()       // Release write lock.
+	c.mu.Unlock() // Release write lock.
 }
 
 // Get retrieves a value from the context's store by its key.
@@ -33,7 +33,7 @@ func (c *Context) Get(key string) (value interface{}, exists bool) {
 		// If store is nil (should not happen in normal lifecycle), key effectively doesn't exist.
 		exists = false
 	}
-	c.mu.RUnlock()      // Release read lock.
+	c.mu.RUnlock() // Release read lock.
 	return
 }
 

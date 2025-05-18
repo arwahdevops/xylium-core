@@ -24,9 +24,9 @@ type xyliumCookie struct {
 // Users can modify these defaults by directly accessing the fields of the returned `xyliumCookie.Cookie`.
 func NewxyliumCookie(name, value string) *xyliumCookie {
 	xc := &xyliumCookie{}
-	xc.SetKey(name)     // Set cookie name.
-	xc.SetValue(value)  // Set cookie value.
-	xc.SetPath("/")     // Default path.
+	xc.SetKey(name)      // Set cookie name.
+	xc.SetValue(value)   // Set cookie value.
+	xc.SetPath("/")      // Default path.
 	xc.SetHTTPOnly(true) // Default HTTPOnly flag.
 	// Example: Set a default expiration (e.g., session cookie or a fixed duration).
 	// This would require importing "time".
@@ -58,12 +58,12 @@ func (c *Context) SetCookie(cookie *fasthttp.Cookie) *Context {
 // set an expiring `fasthttp.Cookie` manually using `c.SetCookie`.
 // Returns the Context pointer for method chaining.
 func (c *Context) ClearCookie(name string) *Context {
-	cookie := fasthttp.AcquireCookie() // Get a cookie object from fasthttp's pool.
+	cookie := fasthttp.AcquireCookie()   // Get a cookie object from fasthttp's pool.
 	defer fasthttp.ReleaseCookie(cookie) // Return to pool when done.
 
 	cookie.SetKey(name)
-	cookie.SetValue("")    // Value can be empty for deletion.
-	cookie.SetPath("/")    // Path should ideally match the original cookie's path.
+	cookie.SetValue("")      // Value can be empty for deletion.
+	cookie.SetPath("/")      // Path should ideally match the original cookie's path.
 	cookie.SetHTTPOnly(true) // Match common default.
 	// `fasthttp.CookieExpireDelete` sets the expiration to a time in the past,
 	// signaling the browser to delete the cookie immediately.

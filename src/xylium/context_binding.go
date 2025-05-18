@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/go-playground/validator/v10" // For struct validation.
-	"github.com/valyala/fasthttp"          // For fasthttp.Args.
+	"github.com/valyala/fasthttp"            // For fasthttp.Args.
 )
 
 // --- Data Binding and Validation ---
@@ -171,12 +171,12 @@ func (c *Context) bindDataFromArgs(out interface{}, args *fasthttp.Args, source 
 			fmt.Sprintf("Binding from %s to type %T is not implemented. Supported types for %s: *map[string]string, or a pointer to a struct.", source, out, source))
 	}
 
-	typ := elem.Type()  // The struct type.
+	typ := elem.Type() // The struct type.
 	numFields := elem.NumField()
 
 	// Iterate over the fields of the struct.
 	for i := 0; i < numFields; i++ {
-		field := typ.Field(i)    // reflect.StructField
+		field := typ.Field(i)     // reflect.StructField
 		fieldVal := elem.Field(i) // reflect.Value for the field
 
 		if !fieldVal.CanSet() { // Skip unexported or unaddressable fields.
@@ -198,9 +198,8 @@ func (c *Context) bindDataFromArgs(out interface{}, args *fasthttp.Args, source 
 			formFieldName = field.Name
 		}
 		if formFieldName == "-" { // Explicitly skip this field.
-		    continue
+			continue
 		}
-
 
 		var argValues []string // Holds string values from form/query for this field.
 		if fieldVal.Kind() == reflect.Slice {
@@ -254,7 +253,6 @@ func (c *Context) setStructField(fieldVal reflect.Value, fieldType reflect.Type,
 			// For *string, an empty string is a valid value, so it will be handled by setScalarField.
 			return nil // Keep pointer as nil.
 		}
-
 
 		if fieldVal.IsNil() {
 			fieldVal.Set(reflect.New(fieldType.Elem())) // Allocate new element of pointed-to type.
@@ -315,7 +313,6 @@ func (c *Context) setScalarField(fieldVal reflect.Value, fieldType reflect.Type,
 		fieldVal = fieldVal.Elem()
 		fieldType = fieldType.Elem() // Update fieldType to the underlying element's type.
 	}
-
 
 	// Handle time.Time separately due to multiple supported parsing formats.
 	if fieldType == reflect.TypeOf(time.Time{}) {

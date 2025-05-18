@@ -40,11 +40,11 @@ const (
 // It is exported to allow potential custom formatters to leverage this structure,
 // though direct use by end-users is not typical.
 type LogEntry struct {
-	Timestamp string `json:"timestamp"`          // Timestamp of the log entry.
-	Level     string `json:"level"`              // Severity level of the log (e.g., "INFO", "ERROR").
-	Message   string `json:"message"`            // The main log message.
-	Fields    M      `json:"fields,omitempty"`   // Additional structured key-value data.
-	Caller    string `json:"caller,omitempty"`   // File and line number of the log call site (if enabled).
+	Timestamp string `json:"timestamp"`        // Timestamp of the log entry.
+	Level     string `json:"level"`            // Severity level of the log (e.g., "INFO", "ERROR").
+	Message   string `json:"message"`          // The main log message.
+	Fields    M      `json:"fields,omitempty"` // Additional structured key-value data.
+	Caller    string `json:"caller,omitempty"` // File and line number of the log call site (if enabled).
 }
 
 // LoggerConfig defines detailed configuration for a DefaultLogger instance.
@@ -61,11 +61,11 @@ type LoggerConfig struct {
 // or if NewDefaultLogger is called without explicit configuration.
 func DefaultLoggerConfig() LoggerConfig {
 	return LoggerConfig{
-		Level:      LevelInfo,       // Default to Info level.
-		Formatter:  TextFormatter,   // Default to human-readable text.
-		ShowCaller: false,           // Caller info off by default for performance.
-		UseColor:   false,           // Color off by default; enabled in DebugMode if TTY.
-		Output:     os.Stdout,       // Default output to standard out.
+		Level:      LevelInfo,     // Default to Info level.
+		Formatter:  TextFormatter, // Default to human-readable text.
+		ShowCaller: false,         // Caller info off by default for performance.
+		UseColor:   false,         // Color off by default; enabled in DebugMode if TTY.
+		Output:     os.Stdout,     // Default output to standard out.
 	}
 }
 
@@ -201,7 +201,7 @@ func (l *DefaultLogger) doLog(level LogLevel, skipFrames int, message string, ar
 		Timestamp: time.Now().Format(DefaultTimestampFormat),
 		Level:     level.String(),
 		Message:   message, // Initial message, may be formatted later.
-		Fields:    make(M),   // Initialize empty fields for this specific entry.
+		Fields:    make(M), // Initialize empty fields for this specific entry.
 	}
 
 	// Populate entry.Fields with copiedBaseFields.
@@ -252,7 +252,7 @@ func (l *DefaultLogger) doLog(level LogLevel, skipFrames int, message string, ar
 
 	// Get a buffer from the pool for formatting the output.
 	buffer := l.bufferPool.Get().(*bytes.Buffer)
-	buffer.Reset()          // Ensure buffer is clean.
+	buffer.Reset()                 // Ensure buffer is clean.
 	defer l.bufferPool.Put(buffer) // Return buffer to pool when done.
 
 	// Format the log entry based on the configured formatter.
@@ -279,10 +279,14 @@ func (l *DefaultLogger) doLog(level LogLevel, skipFrames int, message string, ar
 		levelStr := entry.Level
 		if currentUseColor { // Apply color to level string if enabled.
 			switch level {
-			case LevelDebug: levelStr = colorCyan + levelStr + colorReset
-			case LevelInfo:  levelStr = colorGreen + levelStr + colorReset
-			case LevelWarn:  levelStr = colorYellow + levelStr + colorReset
-			case LevelError, LevelFatal, LevelPanic: levelStr = colorRed + levelStr + colorReset
+			case LevelDebug:
+				levelStr = colorCyan + levelStr + colorReset
+			case LevelInfo:
+				levelStr = colorGreen + levelStr + colorReset
+			case LevelWarn:
+				levelStr = colorYellow + levelStr + colorReset
+			case LevelError, LevelFatal, LevelPanic:
+				levelStr = colorRed + levelStr + colorReset
 			}
 		}
 		buffer.WriteString(fmt.Sprintf("[%s]", levelStr))
@@ -300,7 +304,7 @@ func (l *DefaultLogger) doLog(level LogLevel, skipFrames int, message string, ar
 		buffer.WriteString(entry.Message) // The main formatted message.
 
 		if len(entry.Fields) > 0 { // Append fields if any.
-			buffer.WriteString(" ") // Separator for fields.
+			buffer.WriteString(" ")                       // Separator for fields.
 			fieldBytes, err := json.Marshal(entry.Fields) // Fields are always marshalled as JSON for text format.
 			if err != nil {
 				buffer.WriteString(fmt.Sprintf("(error marshalling fields: %v)", err))
@@ -344,19 +348,33 @@ func (l *DefaultLogger) doLog(level LogLevel, skipFrames int, message string, ar
 // These methods call doLog with the appropriate level and frame skip count.
 // Frame skip count is 2: 1 for the Xf wrapper (e.g., Debugf), 1 for doLog itself.
 
-func (l *DefaultLogger) Printf(format string, args ...interface{}) { l.doLog(LevelInfo, 2, format, args...) }
-func (l *DefaultLogger) Debug(args ...interface{})  { l.doLog(LevelDebug, 2, fmt.Sprint(args...)) }
-func (l *DefaultLogger) Info(args ...interface{})   { l.doLog(LevelInfo, 2, fmt.Sprint(args...)) }
-func (l *DefaultLogger) Warn(args ...interface{})   { l.doLog(LevelWarn, 2, fmt.Sprint(args...)) }
-func (l *DefaultLogger) Error(args ...interface{})  { l.doLog(LevelError, 2, fmt.Sprint(args...)) }
-func (l *DefaultLogger) Fatal(args ...interface{})  { l.doLog(LevelFatal, 2, fmt.Sprint(args...)) }
-func (l *DefaultLogger) Panic(args ...interface{})  { l.doLog(LevelPanic, 2, fmt.Sprint(args...)) }
-func (l *DefaultLogger) Debugf(format string, args ...interface{}) { l.doLog(LevelDebug, 2, format, args...) }
-func (l *DefaultLogger) Infof(format string, args ...interface{})  { l.doLog(LevelInfo, 2, format, args...) }
-func (l *DefaultLogger) Warnf(format string, args ...interface{})  { l.doLog(LevelWarn, 2, format, args...) }
-func (l *DefaultLogger) Errorf(format string, args ...interface{}) { l.doLog(LevelError, 2, format, args...) }
-func (l *DefaultLogger) Fatalf(format string, args ...interface{}) { l.doLog(LevelFatal, 2, format, args...) }
-func (l *DefaultLogger) Panicf(format string, args ...interface{}) { l.doLog(LevelPanic, 2, format, args...) }
+func (l *DefaultLogger) Printf(format string, args ...interface{}) {
+	l.doLog(LevelInfo, 2, format, args...)
+}
+func (l *DefaultLogger) Debug(args ...interface{}) { l.doLog(LevelDebug, 2, fmt.Sprint(args...)) }
+func (l *DefaultLogger) Info(args ...interface{})  { l.doLog(LevelInfo, 2, fmt.Sprint(args...)) }
+func (l *DefaultLogger) Warn(args ...interface{})  { l.doLog(LevelWarn, 2, fmt.Sprint(args...)) }
+func (l *DefaultLogger) Error(args ...interface{}) { l.doLog(LevelError, 2, fmt.Sprint(args...)) }
+func (l *DefaultLogger) Fatal(args ...interface{}) { l.doLog(LevelFatal, 2, fmt.Sprint(args...)) }
+func (l *DefaultLogger) Panic(args ...interface{}) { l.doLog(LevelPanic, 2, fmt.Sprint(args...)) }
+func (l *DefaultLogger) Debugf(format string, args ...interface{}) {
+	l.doLog(LevelDebug, 2, format, args...)
+}
+func (l *DefaultLogger) Infof(format string, args ...interface{}) {
+	l.doLog(LevelInfo, 2, format, args...)
+}
+func (l *DefaultLogger) Warnf(format string, args ...interface{}) {
+	l.doLog(LevelWarn, 2, format, args...)
+}
+func (l *DefaultLogger) Errorf(format string, args ...interface{}) {
+	l.doLog(LevelError, 2, format, args...)
+}
+func (l *DefaultLogger) Fatalf(format string, args ...interface{}) {
+	l.doLog(LevelFatal, 2, format, args...)
+}
+func (l *DefaultLogger) Panicf(format string, args ...interface{}) {
+	l.doLog(LevelPanic, 2, format, args...)
+}
 
 // WithFields creates a new DefaultLogger instance that includes the given `fields`
 // in all subsequent log entries. The original logger is not modified.
