@@ -18,10 +18,12 @@ import (
 //   - Uses the error's specified HTTP status code and message for the client response.
 //   - Logs the error details, including any internal error (`httpErr.Internal`).
 //   - In `DebugMode`, includes `httpErr.Internal.Error()` in the client JSON response under `_debug_info` (unless redundant).
+//
 // - For generic Go errors:
 //   - Responds with HTTP 500 Internal Server Error.
 //   - In `DebugMode`, includes the `originalErr.Error()` in the client JSON response under `_debug_info`.
 //   - In `ReleaseMode`, provides a generic "Internal Server Error" message to the client.
+//
 // - Sends a JSON response to the client.
 func defaultGlobalErrorHandler(c *Context) error {
 	// Retrieve the original error that caused this handler to be invoked.
@@ -35,7 +37,7 @@ func defaultGlobalErrorHandler(c *Context) error {
 	currentMode := c.RouterMode() // Get the current Xylium operating mode from the context.
 
 	// Initialize default HTTP status code and response message for the client.
-	httpStatusCode := StatusInternalServerError                            // Default to 500 Internal Server Error.
+	httpStatusCode := StatusInternalServerError                                         // Default to 500 Internal Server Error.
 	var responseMessage interface{} = M{"error": StatusText(StatusInternalServerError)} // Default user-facing JSON message.
 
 	if !isErrorType || originalErr == nil {
@@ -118,7 +120,7 @@ func defaultGlobalErrorHandler(c *Context) error {
 			// In DebugMode, provide the original error message to the client for easier debugging.
 			if currentMode == DebugMode {
 				responseMessage = M{
-					"error": StatusText(StatusInternalServerError), // Keep generic error message for client.
+					"error":       StatusText(StatusInternalServerError),            // Keep generic error message for client.
 					"_debug_info": M{"internal_error_details": originalErr.Error()}, // Add debug info.
 				}
 			}
@@ -142,11 +144,11 @@ func defaultGlobalErrorHandler(c *Context) error {
 // It is invoked by the router's main Handler when `recover()` captures a panic.
 //
 // Key Responsibilities:
-// - Retrieves panic information from the context (`c.Get("panic_recovery_info")`).
-// - Logs the panic event using `c.Logger()`. The full stack trace is logged by Router.Handler's defer.
-// - Constructs and returns an `xylium.HTTPError` with status 500.
-// - This `HTTPError` is then processed by the `defaultGlobalErrorHandler` (or a custom one),
-//   which formulates the final client response (generic in ReleaseMode, more details in DebugMode).
+//   - Retrieves panic information from the context (`c.Get("panic_recovery_info")`).
+//   - Logs the panic event using `c.Logger()`. The full stack trace is logged by Router.Handler's defer.
+//   - Constructs and returns an `xylium.HTTPError` with status 500.
+//   - This `HTTPError` is then processed by the `defaultGlobalErrorHandler` (or a custom one),
+//     which formulates the final client response (generic in ReleaseMode, more details in DebugMode).
 func defaultPanicHandler(c *Context) error {
 	// Retrieve panic information from the context.
 	// This is set by Router.Handler's defer block when a panic is recovered.

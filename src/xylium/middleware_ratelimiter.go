@@ -2,7 +2,7 @@ package xylium
 
 import (
 	"fmt"
-	"log" // Standard logger for InMemoryStore if no Xylium logger is provided to it.
+	"log"      // Standard logger for InMemoryStore if no Xylium logger is provided to it.
 	"net/http" // For http.TimeFormat when RetryAfterMode is HTTPDate.
 	"strconv"
 	"sync"
@@ -28,13 +28,13 @@ type LimiterStore interface {
 // InMemoryStore is a LimiterStore implementation using an in-memory map.
 type InMemoryStore struct {
 	visitors        map[string]*visitor
-	mu              sync.RWMutex  // Protects visitors map and isClosed flag.
+	mu              sync.RWMutex // Protects visitors map and isClosed flag.
 	cleanupInterval time.Duration
 	stopCleanup     chan struct{} // Closed to signal the cleanup goroutine to stop.
 	startOnce       sync.Once     // Ensures cleanup goroutine is started only once.
 	closeOnce       sync.Once     // Ensures Close actions (like closing stopCleanup) happen only once.
 	logger          Logger
-	isClosed        bool          // Guarded by mu. True if Close() has been initiated.
+	isClosed        bool // Guarded by mu. True if Close() has been initiated.
 }
 
 // InMemoryStoreOption defines a function signature for options to configure an InMemoryStore.
@@ -76,11 +76,16 @@ func NewInMemoryStore(options ...InMemoryStoreOption) *InMemoryStore {
 func (s *InMemoryStore) logf(level LogLevel, format string, args ...interface{}) {
 	if s.logger != nil {
 		switch level {
-		case LevelDebug: s.logger.Debugf(format, args...)
-		case LevelInfo:  s.logger.Infof(format, args...)
-		case LevelWarn:  s.logger.Warnf(format, args...)
-		case LevelError: s.logger.Errorf(format, args...)
-		default:         s.logger.Printf(format, args...)
+		case LevelDebug:
+			s.logger.Debugf(format, args...)
+		case LevelInfo:
+			s.logger.Infof(format, args...)
+		case LevelWarn:
+			s.logger.Warnf(format, args...)
+		case LevelError:
+			s.logger.Errorf(format, args...)
+		default:
+			s.logger.Printf(format, args...)
 		}
 	} else {
 		if level >= LevelInfo { // Only log Info and above for standard logger
@@ -150,7 +155,7 @@ func (s *InMemoryStore) Allow(key string, limit int, window time.Duration) (bool
 
 	// Existing visitor within their current window. Increment request count.
 	v.count++
-	v.lastSeen = now // Update last seen time.
+	v.lastSeen = now                                      // Update last seen time.
 	return v.count <= limit, v.count, limit, v.windowEnds // Return based on new count.
 }
 
@@ -271,8 +276,12 @@ func RateLimiter(config RateLimiterConfig) Middleware {
 		internallyCreatedStore = newStore // Mark for potential registration with router.
 	}
 
-	if config.SendRateLimitHeaders == "" { config.SendRateLimitHeaders = SendHeadersAlways }
-	if config.RetryAfterMode == "" { config.RetryAfterMode = RetryAfterSeconds }
+	if config.SendRateLimitHeaders == "" {
+		config.SendRateLimitHeaders = SendHeadersAlways
+	}
+	if config.RetryAfterMode == "" {
+		config.RetryAfterMode = RetryAfterSeconds
+	}
 
 	// --- The Middleware Handler Function ---
 	return func(next HandlerFunc) HandlerFunc {
@@ -295,14 +304,20 @@ func RateLimiter(config RateLimiterConfig) Middleware {
 			allowed, currentCount, configuredLimit, windowEnds := config.Store.Allow(key, config.MaxRequests, config.WindowDuration)
 			now := time.Now()
 			remainingRequests := configuredLimit - currentCount
-			if !allowed { remainingRequests = 0 } else if remainingRequests < 0 { remainingRequests = 0 }
+			if !allowed {
+				remainingRequests = 0
+			} else if remainingRequests < 0 {
+				remainingRequests = 0
+			}
 
 			headersToSend := make(map[string]string)
 			headersToSend["X-RateLimit-Limit"] = strconv.Itoa(configuredLimit)
 			headersToSend["X-RateLimit-Remaining"] = strconv.Itoa(remainingRequests)
 			var resetValue string
 			secondsToReset := int(windowEnds.Sub(now).Seconds())
-			if secondsToReset < 0 { secondsToReset = 0 }
+			if secondsToReset < 0 {
+				secondsToReset = 0
+			}
 
 			if config.RetryAfterMode == RetryAfterHTTPDate {
 				resetValue = windowEnds.Format(http.TimeFormat)
@@ -318,16 +333,24 @@ func RateLimiter(config RateLimiterConfig) Middleware {
 				)
 				c.SetHeader("Retry-After", resetValue)
 				if config.SendRateLimitHeaders == SendHeadersAlways || config.SendRateLimitHeaders == SendHeadersOnLimit {
-					for hKey, hVal := range headersToSend { c.SetHeader(hKey, hVal) }
+					for hKey, hVal := range headersToSend {
+						c.SetHeader(hKey, hVal)
+					}
 				}
 				var errorResponseMessage string
 				switch msg := config.Message.(type) {
 				case string:
-					if msg == "" { errorResponseMessage = fmt.Sprintf("Rate limit exceeded. Try again in %d seconds.", secondsToReset)
-					} else { errorResponseMessage = msg }
+					if msg == "" {
+						errorResponseMessage = fmt.Sprintf("Rate limit exceeded. Try again in %d seconds.", secondsToReset)
+					} else {
+						errorResponseMessage = msg
+					}
 				case func(c *Context, limit int, window time.Duration, resetTime time.Time) string:
-					if msg != nil { errorResponseMessage = msg(c, configuredLimit, config.WindowDuration, windowEnds)
-					} else { errorResponseMessage = fmt.Sprintf("Rate limit exceeded. Try again in %d seconds.", secondsToReset) }
+					if msg != nil {
+						errorResponseMessage = msg(c, configuredLimit, config.WindowDuration, windowEnds)
+					} else {
+						errorResponseMessage = fmt.Sprintf("Rate limit exceeded. Try again in %d seconds.", secondsToReset)
+					}
 				default:
 					errorResponseMessage = fmt.Sprintf("Rate limit exceeded. Try again in %d seconds.", secondsToReset)
 				}
@@ -335,7 +358,9 @@ func RateLimiter(config RateLimiterConfig) Middleware {
 			}
 
 			if config.SendRateLimitHeaders == SendHeadersAlways {
-				for hKey, hVal := range headersToSend { c.SetHeader(hKey, hVal) }
+				for hKey, hVal := range headersToSend {
+					c.SetHeader(hKey, hVal)
+				}
 			}
 			return next(c)
 		}

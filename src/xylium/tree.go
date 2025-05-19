@@ -50,11 +50,12 @@ func NewTree() *Tree {
 }
 
 // Add registers a new route (handler and middlewares) for a given HTTP method and path pattern.
-// - `method`: The HTTP method (e.g., "GET", "POST"), normalized to uppercase.
-// - `path`: The URL path pattern (e.g., "/users", "/users/:id", "/files/*filepath").
-//           Must begin with "/". Trailing slashes (except for the root path "/") are generally removed.
-// - `handler`: The `HandlerFunc` to execute when this route is matched.
-// - `middlewares`: A variadic slice of `Middleware` specific to this route.
+//   - `method`: The HTTP method (e.g., "GET", "POST"), normalized to uppercase.
+//   - `path`: The URL path pattern (e.g., "/users", "/users/:id", "/files/*filepath").
+//     Must begin with "/". Trailing slashes (except for the root path "/") are generally removed.
+//   - `handler`: The `HandlerFunc` to execute when this route is matched.
+//   - `middlewares`: A variadic slice of `Middleware` specific to this route.
+//
 // Panics if the path format is invalid, if the handler is nil, or if a handler is already registered
 // for the same method and path.
 func (t *Tree) Add(method, path string, handler HandlerFunc, middlewares ...Middleware) {
@@ -120,7 +121,7 @@ func (n *node) findOrAddChild(segment string) *node {
 
 	// No existing child found, create a new one.
 	newNode := &node{
-		path:      segment,    // Store the raw segment (e.g., "users", ":id", "*filepath").
+		path:      segment, // Store the raw segment (e.g., "users", ":id", "*filepath").
 		nodeType:  nt,
 		paramName: paramName,
 		children:  make([]*node, 0), // Initialize children slice for the new node.
@@ -143,11 +144,12 @@ func (n *node) findOrAddChild(segment string) *node {
 // Find searches for a handler matching the request's HTTP method and path.
 // It traverses the radix tree based on the request path segments.
 // Returns:
-// - `handler`: The `HandlerFunc` if a match is found for the method and path.
-// - `routeMw`: The slice of `Middleware` specific to the matched route.
-// - `params`: A map of extracted path parameters (e.g., {"id": "123"}).
-// - `allowedMethods`: A sorted slice of HTTP methods that *are* defined for the matched path,
-//   even if the requested method itself wasn't found. This is used for 405 Method Not Allowed responses.
+//   - `handler`: The `HandlerFunc` if a match is found for the method and path.
+//   - `routeMw`: The slice of `Middleware` specific to the matched route.
+//   - `params`: A map of extracted path parameters (e.g., {"id": "123"}).
+//   - `allowedMethods`: A sorted slice of HTTP methods that *are* defined for the matched path,
+//     even if the requested method itself wasn't found. This is used for 405 Method Not Allowed responses.
+//
 // If no route matches the path at all, all return values will be nil/empty.
 // If a path matches but not the method, handler/routeMw will be nil, but params and allowedMethods will be populated.
 func (t *Tree) Find(method, requestPath string) (handler HandlerFunc, routeMw []Middleware, params map[string]string, allowedMethods []string) {
@@ -217,14 +219,18 @@ func searchPathRecursive(current *node, segments []string, segIdx int, params ma
 			// Static child: segment must match exactly.
 			if child.path == currentSegment {
 				searchPathRecursive(child, segments, segIdx+1, params, matchedNode)
-				if *matchedNode != nil { return } // If a deeper match was found, propagate it up.
+				if *matchedNode != nil {
+					return
+				} // If a deeper match was found, propagate it up.
 			}
 		case paramNode:
 			// Parameter child: captures the segment value.
 			params[child.paramName] = currentSegment // Store param value.
 			searchPathRecursive(child, segments, segIdx+1, params, matchedNode)
-			if *matchedNode != nil { return } // If a deeper match, propagate.
-			delete(params, child.paramName)    // Backtrack: remove param if this path didn't lead to a full match.
+			if *matchedNode != nil {
+				return
+			} // If a deeper match, propagate.
+			delete(params, child.paramName) // Backtrack: remove param if this path didn't lead to a full match.
 		case catchAllNode:
 			// Catch-all child: captures this segment and all remaining segments.
 			// It must be the last part of a registered route.
@@ -336,10 +342,10 @@ func (t *Tree) PrintRoutes(logger Logger) {
 // printNodeRoutesRecursive is a helper function to recursively traverse the tree
 // and log routes using the provided `xylium.Logger`.
 // It reconstructs the full path for display purposes.
-// - `logger`: The `xylium.Logger` to use for output.
-// - `n`: The current `node` being processed.
-// - `basePath`: The accumulated path from the root to the parent of `n`.
-//               For direct children of root, `basePath` will be "".
+//   - `logger`: The `xylium.Logger` to use for output.
+//   - `n`: The current `node` being processed.
+//   - `basePath`: The accumulated path from the root to the parent of `n`.
+//     For direct children of root, `basePath` will be "".
 func (t *Tree) printNodeRoutesRecursive(logger Logger, n *node, basePath string) {
 	// Construct the full path for the current node.
 	var currentFullPath string
@@ -358,19 +364,18 @@ func (t *Tree) printNodeRoutesRecursive(logger Logger, n *node, basePath string)
 	// Example: if basePath is "/api" and n.path is "", currentFullPath becomes "/api/" (undesired if n.path is for root of group).
 	// The n.path for actual segments should not be empty. Root node has n.path = "".
 
-    // Simpler path construction:
-    // If current node is root (its path is empty), display path is "/".
-    // Otherwise, it's basePath + "/" + node's path.
-    if n.path == "" { // True only for the root node.
-        currentFullPath = "/"
-    } else {
-        if basePath == "/" { // If parent was root, child is /segment
-            currentFullPath = basePath + n.path
-        } else { // If parent was /api, child is /api/segment
-            currentFullPath = basePath + "/" + n.path
-        }
-    }
-
+	// Simpler path construction:
+	// If current node is root (its path is empty), display path is "/".
+	// Otherwise, it's basePath + "/" + node's path.
+	if n.path == "" { // True only for the root node.
+		currentFullPath = "/"
+	} else {
+		if basePath == "/" { // If parent was root, child is /segment
+			currentFullPath = basePath + n.path
+		} else { // If parent was /api, child is /api/segment
+			currentFullPath = basePath + "/" + n.path
+		}
+	}
 
 	// If the current node has handlers, log them.
 	if len(n.handlers) > 0 {

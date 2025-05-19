@@ -109,7 +109,7 @@ func TimeoutWithConfig(config TimeoutConfig) Middleware {
 			timedXyliumCtx := c.WithGoContext(ctxWithTimeout)
 
 			// --- Asynchronous Handler Execution with Timeout Monitoring ---
-			done := make(chan error, 1)       // Buffered channel for the error (or nil) from `next(c)`.
+			done := make(chan error, 1)            // Buffered channel for the error (or nil) from `next(c)`.
 			panicChan := make(chan interface{}, 1) // Buffered channel for panics recovered from `next(c)`.
 
 			go func() {

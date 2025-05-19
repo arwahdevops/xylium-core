@@ -31,8 +31,8 @@ type HTTPError struct {
 // - `message...`: An optional variadic argument for the user-facing message.
 //   - If provided, the first element `message[0]` is used.
 //   - If `message[0]` is an `error` type:
-//     - If it's already an `*HTTPError`, its `Message` and `Internal` error are adopted (unless `message[0]` had no `Internal`, then `message[0]` itself becomes `Internal`). The `code` from `NewHTTPError` call takes precedence.
-//     - If it's a generic `error`, its `Error()` string becomes `he.Message`, and the error itself becomes `he.Internal`.
+//   - If it's already an `*HTTPError`, its `Message` and `Internal` error are adopted (unless `message[0]` had no `Internal`, then `message[0]` itself becomes `Internal`). The `code` from `NewHTTPError` call takes precedence.
+//   - If it's a generic `error`, its `Error()` string becomes `he.Message`, and the error itself becomes `he.Internal`.
 //   - If `message[0]` is not an `error` (e.g., string, `xylium.M`), it's used directly as `he.Message`.
 //   - If no `message` is provided or it's nil, `he.Message` defaults to the standard HTTP status text for `code` (e.g., "Not Found" for 404).
 func NewHTTPError(code int, message ...interface{}) *HTTPError {

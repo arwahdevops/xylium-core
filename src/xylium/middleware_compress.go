@@ -173,7 +173,6 @@ func GzipWithConfig(config GzipConfig) Middleware {
 			// For fasthttp, using `c.Ctx.Response.Header.Add("Vary", "Accept-Encoding")` is safer for multi-value.
 			c.Ctx.Response.Header.Add("Vary", "Accept-Encoding")
 
-
 			logger.Debugf("Compression successful for %s %s. New size: %d bytes.",
 				c.Method(), c.Path(), len(compressedBody))
 

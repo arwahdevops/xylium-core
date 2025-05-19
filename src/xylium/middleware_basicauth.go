@@ -2,8 +2,8 @@ package xylium
 
 import (
 	"encoding/base64" // For decoding Basic Auth credentials.
-	"errors"         // For defining standard error types.
-	"strings"        // For string manipulation (prefix checking, splitting).
+	"errors"          // For defining standard error types.
+	"strings"         // For string manipulation (prefix checking, splitting).
 )
 
 // BasicAuthConfig defines the configuration for the BasicAuth middleware.
