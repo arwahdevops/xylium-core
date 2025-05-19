@@ -1,5 +1,3 @@
----
-
 # Error Handling in Xylium
 
 Xylium provides a flexible and centralized error handling mechanism, allowing you to manage application errors consistently and provide appropriate responses to clients. This guide covers how to return errors, use `xylium.HTTPError` for precise HTTP responses, and customize global error and panic handlers.
