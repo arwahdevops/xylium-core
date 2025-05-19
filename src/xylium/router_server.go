@@ -80,11 +80,11 @@ func (r *Router) buildFasthttpServer() *fasthttp.Server {
 	fasthttpCompatibleLogger := &loggerAdapter{internalLogger: r.serverConfig.Logger}
 
 	if r.CurrentMode() == DebugMode {
-		cfgLog := r.Logger().WithFields(M{"component": "fasthttp-server-builder"})
-		cfgLog.Debugf("Building fasthttp.Server with Name: '%s'", r.serverConfig.Name)
+		cfgLog := r.Logger().WithFields(M{"component": "xylium-server-builder"})
+		cfgLog.Debugf("Building Xylium Server with Name: '%s'", r.serverConfig.Name)
 		cfgLog.Debugf("ReadTimeout: %v, WriteTimeout: %v, IdleTimeout: %v", r.serverConfig.ReadTimeout, r.serverConfig.WriteTimeout, r.serverConfig.IdleTimeout)
 		cfgLog.Debugf("MaxRequestBodySize: %d, Concurrency: %d", r.serverConfig.MaxRequestBodySize, r.serverConfig.Concurrency)
-		cfgLog.Debugf("CloseOnShutdown (fasthttp): %t, ShutdownTimeout (Xylium app-level): %v", r.serverConfig.CloseOnShutdown, r.serverConfig.ShutdownTimeout)
+		cfgLog.Debugf("CloseOnShutdown : %t, ShutdownTimeout (Xylium app-level): %v", r.serverConfig.CloseOnShutdown, r.serverConfig.ShutdownTimeout)
 	}
 
 	return &fasthttp.Server{

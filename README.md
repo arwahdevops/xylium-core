@@ -183,7 +183,7 @@ You can check the current effective mode of a router instance using `app.Current
 
 For more detailed examples and API usage, please refer to:
 *   The files in the `examples/` directory within this repository (especially `unified_showcase.go` for a comprehensive demonstration).
-*   The `Docs/Cookbook.md` file for concise syntax examples of common use-cases.
+*   The `Docs/` file for concise syntax examples of common use-cases.
 *   Source code comments, which provide in-depth explanations of specific functions, structs, and configurations.
 
 (A full documentation website is planned for the future!)
