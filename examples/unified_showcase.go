@@ -63,7 +63,7 @@ func apiKeyAuthMiddleware(validKey string) xylium.Middleware {
 				return xylium.NewHTTPError(http.StatusForbidden, "Invalid API Key")
 			}
 			logger.Info("API Key validated")
-			c.Set("authenticated_user", "api_user_"+key[:min(len(key),5)])
+			c.Set("authenticated_user", "api_user_"+key[:min(len(key), 5)])
 			return next(c)
 		}
 	}
@@ -164,7 +164,8 @@ func main() {
 
 	app.GET("/items", func(c *xylium.Context) error {
 		itemsStoreMux.RLock()
-		currentItems := make([]CreateItemInput, len(itemsStore)); copy(currentItems, itemsStore)
+		currentItems := make([]CreateItemInput, len(itemsStore))
+		copy(currentItems, itemsStore)
 		itemsStoreMux.RUnlock()
 		return c.JSON(http.StatusOK, currentItems)
 	})

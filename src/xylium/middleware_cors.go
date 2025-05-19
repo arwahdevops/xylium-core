@@ -97,7 +97,7 @@ func CORSWithConfig(config CORSConfig) Middleware {
 				logger.Warnf("CORS: No 'AllowOrigins' configured. Denying cross-origin request from '%s' for %s %s by not setting ACAO header. Please configure allowed origins.",
 					requestOrigin, c.Method(), c.Path())
 				c.SetHeader("Vary", "Origin") // Still good practice.
-				return next(c)               // Proceed, but browser will block due to missing ACAO.
+				return next(c)                // Proceed, but browser will block due to missing ACAO.
 			}
 
 			logger.Debugf("CORS: Processing request from Origin '%s' for %s %s.", requestOrigin, c.Method(), c.Path())

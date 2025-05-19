@@ -14,24 +14,24 @@ import (
 
 // CSRFConfig defines the configuration for the CSRF (Cross-Site Request Forgery) protection middleware.
 type CSRFConfig struct {
-	TokenLength    int
-	CookieName     string
-	CookiePath     string
-	CookieDomain   string
-	CookieMaxAge   time.Duration
-	CookieSecure   bool
+	TokenLength  int
+	CookieName   string
+	CookiePath   string
+	CookieDomain string
+	CookieMaxAge time.Duration
+	CookieSecure bool
 	// CookieHTTPOnly specifies if the CSRF cookie should be inaccessible to client-side JavaScript.
 	// Default (from DefaultCSRFConfig): true (more secure for traditional apps).
 	// SPAs using Double Submit Cookie pattern (reading token from this cookie via JS)
 	// MUST explicitly set this to `false`.
-	CookieHTTPOnly bool
-	CookieSameSite fasthttp.CookieSameSite
-	HeaderName     string
-	FormFieldName  string
-	SafeMethods    []string
-	ErrorHandler   HandlerFunc
-	TokenLookup    string
-	Extractor      func(c *Context) (string, error)
+	CookieHTTPOnly  bool
+	CookieSameSite  fasthttp.CookieSameSite
+	HeaderName      string
+	FormFieldName   string
+	SafeMethods     []string
+	ErrorHandler    HandlerFunc
+	TokenLookup     string
+	Extractor       func(c *Context) (string, error)
 	ContextTokenKey string
 }
 
@@ -40,11 +40,11 @@ var ErrorCSRFTokenInvalid = errors.New("xylium: invalid, missing, or mismatched 
 
 // DefaultCSRFConfig provides sensible default configurations for CSRF protection.
 var DefaultCSRFConfig = CSRFConfig{
-	TokenLength:     32,
-	CookieName:      "_csrf_token",
-	CookiePath:      "/",
-	CookieMaxAge:    12 * time.Hour,
-	CookieSecure:    true,  // Secure by default; override for local HTTP dev.
+	TokenLength:  32,
+	CookieName:   "_csrf_token",
+	CookiePath:   "/",
+	CookieMaxAge: 12 * time.Hour,
+	CookieSecure: true, // Secure by default; override for local HTTP dev.
 	// CookieHTTPOnly is now true by default for better security.
 	// SPAs needing to read the CSRF token from a cookie via JavaScript (Double Submit Cookie pattern)
 	// must explicitly set config.CookieHTTPOnly = false.
