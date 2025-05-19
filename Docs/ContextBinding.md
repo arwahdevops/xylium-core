@@ -1,4 +1,3 @@
----
 # Xylium Data Binding: From Request to Structs
 
 Xylium provides powerful and flexible mechanisms for binding incoming request data (JSON, XML, form data, query parameters) to Go structs. This process often includes validation to ensure data integrity.
