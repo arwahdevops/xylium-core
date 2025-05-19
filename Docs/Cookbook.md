@@ -218,6 +218,4 @@ func main() {
 *   **Debug Mode:** Verbose logging (debug level, caller info, color if TTY), detailed error messages to client.
 *   **Release Mode:** Less verbose logging (info level), generic error messages to client.
 *   **Test Mode:** Similar to debug but often without color, suitable for automated tests.
-*   The logger (`app.Logger()` and `c.Logger()`) is automatically configured based on the effective mode.
-
 ---
