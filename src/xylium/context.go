@@ -1,7 +1,9 @@
+// src/xylium/context.go
 package xylium
 
 import (
 	"context" // For Go's context.Context
+	"fmt"     // For fmt.Sprintf in MustGet panic message.
 	"sync"    // For sync.RWMutex, sync.Once for thread-safety and one-time operations.
 
 	"github.com/go-playground/validator/v10" // For default struct validation.
@@ -74,7 +76,7 @@ type Context struct {
 
 	// responseOnce ensures that certain response-related initializations (like setting
 	// a default Content-Type) happen only once per request.
-	responseOnce sync.Once // This field caused the go vet warning if Context was copied directly.
+	responseOnce sync.Once
 
 	// goCtx is the standard Go context.Context associated with this request.
 	// It's used for cancellation signals, deadlines, and passing request-scoped values.
@@ -84,38 +86,41 @@ type Context struct {
 // reset is called when a Context instance is released back to the pool.
 // It clears all request-specific data to prepare the Context for reuse.
 func (c *Context) reset() {
-	c.Ctx = nil
+	c.Ctx = nil // Clear fasthttp context reference.
 
+	// Clear path parameters.
 	if c.Params != nil {
 		for k := range c.Params {
 			delete(c.Params, k)
 		}
-	} else {
-		c.Params = make(map[string]string)
 	}
+	// Note: c.Params map itself is reused, not re-made, unless it was nil.
 
+	// Reset handlers slice.
 	c.handlers = c.handlers[:0]
-	c.index = -1
+	c.index = -1 // Reset handler index.
 
-	if c.mu == nil {
+	// Clear the request-scoped store.
+	// mu and store maps are initialized by the pool.New or previous reset, so they should exist.
+	if c.mu == nil { // Should not happen if pool.New is correct.
 		c.mu = new(sync.RWMutex)
 	}
-	// No lock needed here if reset is guaranteed to be called non-concurrently for this instance.
-	if c.store == nil {
+	if c.store == nil { // Should not happen.
 		c.store = make(map[string]interface{})
 	}
 	for k := range c.store {
 		delete(c.store, k)
 	}
 
-	c.router = nil
-	c.queryArgs = nil
-	c.formArgs = nil
+	c.router = nil               // Clear router reference.
+	c.queryArgs = nil            // Clear cached query arguments.
+	c.formArgs = nil             // Clear cached form arguments.
 	c.responseOnce = sync.Once{} // Reset sync.Once for the next use.
-	c.goCtx = nil
+	c.goCtx = nil                // Clear Go context reference.
 }
 
 // Next executes the next handler in the middleware chain.
+// If there are no more handlers, it does nothing and returns nil.
 func (c *Context) Next() error {
 	c.index++
 	if c.index < len(c.handlers) {
@@ -124,47 +129,64 @@ func (c *Context) Next() error {
 	return nil
 }
 
-// setRouter associates the router with the context. Internal use.
+// setRouter associates the router with the context. Internal use by the framework.
 func (c *Context) setRouter(r *Router) {
 	c.router = r
 }
 
 // ResponseCommitted checks if the response headers have been sent.
+// This is useful for middleware or handlers to determine if they can still
+// modify the response (e.g., set status code, headers, or write body).
 func (c *Context) ResponseCommitted() bool {
 	if c.Ctx == nil {
-		return false
+		return false // No fasthttp context, so nothing could have been committed.
 	}
+	// Hijacked connections are considered committed.
 	if c.Ctx.Hijacked() {
 		return true
 	}
 	resp := &c.Ctx.Response
+	// StatusSwitchingProtocols implies headers have been sent for protocol upgrade.
 	if resp.StatusCode() == fasthttp.StatusSwitchingProtocols {
 		return true
 	}
+	// If the body is being streamed, headers are already sent.
 	if resp.IsBodyStream() {
 		return true
 	}
+	// If any body content has been written.
 	if len(resp.Body()) > 0 {
 		return true
 	}
+	// If Content-Length is set (even to 0), headers are considered sent.
+	// A negative Content-Length typically means chunked encoding or stream, where headers are sent first.
 	if resp.Header.ContentLength() >= 0 {
 		return true
 	}
+	// Add explicit check for SetStatusCode, as this often implies commitment or impending commitment.
+	// However, fasthttp itself might not consider just setting status as "committed".
+	// The existing checks are generally sufficient as they look for actual header/body writes.
 	return false
 }
 
-// RouterMode returns the operating mode of the Xylium router.
+// RouterMode returns the operating mode (e.g., "debug", "release") of the Xylium router
+// that is handling this context. Returns an empty string if the router is not set.
 func (c *Context) RouterMode() string {
 	if c.router != nil {
 		return c.router.CurrentMode()
 	}
-	return ""
+	return "" // Or perhaps DebugMode as a very defensive default, though empty is clearer for "not set".
 }
 
 // Logger returns a `xylium.Logger` instance for the current request context.
+// This logger is derived from the router's base logger and automatically includes
+// contextual fields like `xylium_request_id`, `otel_trace_id`, and `otel_span_id` if they
+// are present in the context's store.
 func (c *Context) Logger() Logger {
 	if c.router == nil || c.router.Logger() == nil {
-		emergencyLogger := NewDefaultLogger()
+		// This case should ideally not be reached in a normal request flow.
+		// It might occur if Context is used outside a request cycle without proper setup.
+		emergencyLogger := NewDefaultLogger() // Create a temporary logger.
 		emergencyLogger.SetLevel(LevelWarn)
 		var pathInfo = "unknown_path (context.router or c.router.Logger() is nil)"
 		if c.Ctx != nil && c.Ctx.Path() != nil {
@@ -172,73 +194,125 @@ func (c *Context) Logger() Logger {
 		}
 		emergencyLogger.Warnf(
 			"Context.Logger() called but c.router or c.router.Logger() is nil for request path: '%s'. "+
-				"Returning a temporary emergency logger.", pathInfo)
+				"Returning a temporary emergency logger. Ensure Context is properly initialized by the router.", pathInfo)
 		return emergencyLogger
 	}
 
-	baseLogger := c.router.Logger()
-	logFields := M{}
+	baseLogger := c.router.Logger() // Get the router's configured base logger.
+	logFields := M{}                // Initialize a map for contextual fields.
 
+	// Attempt to retrieve and add standard contextual fields from the context store.
 	if requestIDValue, exists := c.Get(ContextKeyRequestID); exists {
 		if requestIDString, ok := requestIDValue.(string); ok && requestIDString != "" {
 			logFields[string(ContextKeyRequestID)] = requestIDString
 		}
 	}
-	if traceIDVal, exists := c.Get("otel_trace_id"); exists {
+	// Standard keys for OpenTelemetry trace and span IDs (assuming they are set by OTel middleware).
+	if traceIDVal, exists := c.Get(ContextKeyOtelTraceID); exists { // Using const from otel middleware
 		if traceID, ok := traceIDVal.(string); ok && traceID != "" {
-			logFields["trace_id"] = traceID
+			logFields["trace_id"] = traceID // Common alias used in logs
 		}
 	}
-	if spanIDVal, exists := c.Get("otel_span_id"); exists {
+	if spanIDVal, exists := c.Get(ContextKeyOtelSpanID); exists { // Using const from otel middleware
 		if spanID, ok := spanIDVal.(string); ok && spanID != "" {
-			logFields["span_id"] = spanID
+			logFields["span_id"] = spanID // Common alias used in logs
 		}
 	}
 
+	// If any contextual fields were found, return a new logger instance enriched with these fields.
+	// Otherwise, return the base logger directly.
 	if len(logFields) > 0 {
 		return baseLogger.WithFields(logFields)
 	}
 	return baseLogger
 }
 
-// GoContext returns the standard Go context.Context associated with this request.
+// GoContext returns the standard Go `context.Context` associated with this request.
+// This context can be used for cancellation signals, deadlines, and passing
+// request-scoped values to downstream services or libraries that support `context.Context`.
+// If no Go context has been explicitly set (e.g., by middleware like Timeout or OpenTelemetry),
+// it defaults to `context.Background()`.
 func (c *Context) GoContext() context.Context {
 	if c.goCtx == nil {
+		// Default to context.Background() if c.goCtx was not initialized.
+		// This ensures that c.GoContext() always returns a non-nil context.
 		return context.Background()
 	}
 	return c.goCtx
 }
 
-// WithGoContext returns a Xylium Context derived from c, with its
-// Go `context.Context` replaced by `goCtx`.
-// The new context (`newC`) shares the same `store` map and `mu` (RWMutex) instance
-// as the original context `c`.
-// `responseOnce` is re-initialized for `newC` to manage its own response state.
-// Other fields like Ctx, Params, handlers, index, router, queryArgs, formArgs
-// are shallow copied.
-// Panics if `goCtx` is nil.
+// WithGoContext returns a new Xylium Context instance derived from `c`,
+// but with its internal Go `context.Context` replaced by the provided `goCtx`.
+// The new context (`newC`) shares the same underlying request-scoped store (`c.store`)
+// and its lock (`c.mu`) with the original context `c`.
+// Other fields like `Ctx` (fasthttp context), `Params`, `handlers`, `index`, `router`,
+// `queryArgs`, and `formArgs` are shallow copied.
+// The `responseOnce` field is re-initialized for `newC` to manage its own response state independently.
+// This method is crucial for middleware (e.g., Timeout, OpenTelemetry) that need to
+// propagate a modified Go context down the handler chain.
+// Panics if the provided `goCtx` is nil.
 func (c *Context) WithGoContext(goCtx context.Context) *Context {
 	if goCtx == nil {
 		panic("xylium: WithGoContext cannot be called with a nil context.Context")
 	}
 
-	// Manually construct the new Context to avoid copying sync.Once value.
+	// Manually construct the new Context to ensure correct shallow copying of reference types
+	// and proper initialization of fields like responseOnce.
 	newC := &Context{
-		// Shallow copy or share these fields:
-		Ctx:       c.Ctx,
-		Params:    c.Params,    // Map is a reference type, shared
-		handlers:  c.handlers,  // Slice header is copied, underlying array shared
-		index:     c.index,     // Value copy
-		store:     c.store,     // Map is a reference type, shared
-		mu:        c.mu,        // Pointer to RWMutex is copied, RWMutex instance shared
-		router:    c.router,    // Pointer, shared
-		queryArgs: c.queryArgs, // Pointer, shared
-		formArgs:  c.formArgs,  // Pointer, shared
+		// Fields to shallow copy or share:
+		Ctx:       c.Ctx,       // Share the fasthttp.RequestCtx pointer.
+		Params:    c.Params,    // Share the map (reference type).
+		handlers:  c.handlers,  // Share the slice header (underlying array shared).
+		index:     c.index,     // Copy the integer value.
+		store:     c.store,     // Share the map (reference type).
+		mu:        c.mu,        // Share the pointer to RWMutex.
+		router:    c.router,    // Share the Router pointer.
+		queryArgs: c.queryArgs, // Share pointer if already parsed.
+		formArgs:  c.formArgs,  // Share pointer if already parsed.
 
-		// Initialize these fields as new/independent for newC:
-		responseOnce: sync.Once{}, // New sync.Once instance
-		goCtx:        goCtx,       // The new Go context
+		// Fields to initialize as new/independent for newC:
+		responseOnce: sync.Once{}, // A new sync.Once instance for the new context.
+		goCtx:        goCtx,       // Set the new Go context.
 	}
+	// Note: If c.Params, c.handlers, c.store, c.queryArgs, c.formArgs were nil in 'c',
+	// they will also be nil in 'newC' after this shallow copy, which is generally fine
+	// as they are typically initialized on demand or by the router.
+	// The pool initialization should ensure `store` and `mu` are non-nil.
 
 	return newC
+}
+
+// AppGet retrieves a value from the application-level store of the router
+// associated with this context.
+// Returns the value and true if the key exists, otherwise nil and false.
+// This is useful for accessing shared services or configurations (e.g., database connectors)
+// set globally on the router instance.
+func (c *Context) AppGet(key string) (interface{}, bool) {
+	if c.router == nil {
+		// This might happen if the context is used without being fully processed by the router,
+		// e.g., in some testing scenarios or if a middleware prematurely ends the request
+		// before the router is fully associated.
+		// Using c.Logger() here might be problematic if it also depends on c.router.
+		// Consider a more direct log or simply returning false.
+		// For now, let's assume c.Logger() handles router being nil gracefully.
+		if logger := c.Logger(); logger != nil { // Defensive check on logger
+			logger.Warnf("AppGet: Attempted to get key '%s' from app store, but context's router is nil.", key)
+		}
+		return nil, false
+	}
+	return c.router.AppGet(key)
+}
+
+// MustAppGet retrieves a value from the application-level store of the router.
+// It panics if the key does not exist in the application store or if the context's
+// router is not set.
+func (c *Context) MustAppGet(key string) interface{} {
+	if c.router == nil {
+		panic(fmt.Sprintf("xylium: MustAppGet called for key '%s', but context's router is nil.", key))
+	}
+	val, ok := c.router.AppGet(key)
+	if !ok {
+		panic(fmt.Sprintf("xylium: key '%s' does not exist in application store", key))
+	}
+	return val
 }
