@@ -32,7 +32,7 @@ package main
 
 import (
 	"net/http"
-	"github.com/arwahdevops/xylium-core/src/xylium" // Adjust import path
+	"github.com/arwahdevops/xylium-core/src/xylium"
 )
 
 func main() {
