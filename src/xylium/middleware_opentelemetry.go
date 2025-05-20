@@ -1,4 +1,3 @@
-// Filename: src/xylium/middleware_opentelemetry.go
 package xylium
 
 import (
