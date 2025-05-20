@@ -27,7 +27,6 @@ Xylium provides powerful and flexible mechanisms for binding incoming request da
     *   [8.1. Binding JSON with Validation](#81-binding-json-with-validation)
     *   [8.2. Binding Query Parameters with Validation (for GET requests)](#82-binding-query-parameters-with-validation-for-get-requests)
     *   [8.3. Implementing `XBind` for Custom Binding Logic](#83-implementing-xbind-for-custom-binding-logic)
-*   [9. Type-Safe URL Parameter Binding (Alternative Approach)](#9-type-safe-url-parameter-binding-alternative-approach)
 
 ---
 
@@ -372,12 +371,6 @@ Refer to [Section 3.1](#31-custom-binding-with-xbind-interface-high-performancec
 *   Bypass reflection for performance-critical paths.
 *   Implement binding logic from non-standard request formats (e.g., Protocol Buffers, custom binary).
 *   Have fine-grained control over how data is mapped to your struct fields or perform complex pre-processing during binding.
-
-## 9. Type-Safe URL Parameter Binding (Alternative Approach)
-
-Xylium also offers a specialized, type-safe mechanism for binding URL path and query parameters directly into Go structs using generics and struct tags like `path:"paramName"`, `query:"paramName"`, and `default:"value"`. This method is registered differently (e.g., `xylium.RegisterGETParams`) and offers a more declarative way to handle URL parameters.
-
-For detailed information on this feature, please refer to **`TypeSafeParams.md`**.
 
 ---
 
