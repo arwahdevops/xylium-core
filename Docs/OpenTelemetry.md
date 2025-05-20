@@ -60,7 +60,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.25.0" // Or your chosen version
 
-	"github.com/arwahdevops/xylium-core/src/xylium" // Adjust import path
+	"github.com/arwahdevops/xylium-core/src/xylium"
 )
 
 // initTracer sets up the OpenTelemetry SDK for tracing.

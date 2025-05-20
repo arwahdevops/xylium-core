@@ -40,7 +40,7 @@ In Xylium, route handlers and middleware have the signature `func(c *xylium.Cont
 import (
 	"errors"
 	"net/http"
-	"github.com/arwahdevops/xylium-core/src/xylium" // Adjust import path
+	"github.com/arwahdevops/xylium-core/src/xylium"
 )
 
 func GetItemHandler(c *xylium.Context) error {

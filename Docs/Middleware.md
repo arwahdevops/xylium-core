@@ -51,7 +51,7 @@ package main
 
 import (
 	"time"
-	"github.com/arwahdevops/xylium-core/src/xylium" // Adjust import path
+	"github.com/arwahdevops/xylium-core/src/xylium"
 )
 
 // SimpleRequestLogger logs the request method, path, and processing time.
