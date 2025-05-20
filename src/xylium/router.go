@@ -1,13 +1,15 @@
+// src/xylium/router.go
 package xylium
 
 import (
 	"encoding/json" // For ServeFiles PathNotFound JSON response.
 	"fmt"           // For error formatting.
-	"io"            // For HTMLRenderer interface.
+	"io"            // For HTMLRenderer interface and io.Closer.
 	"os"            // For os.Stdout in logger config adjustments (NewWithConfig).
 	"path/filepath" // For path cleaning and manipulation in ServeFiles.
 	"runtime/debug" // For capturing stack traces on panic.
 	"strings"       // For string manipulation (path normalization, joining).
+	"sync"          // For sync.RWMutex and sync.Mutex.
 
 	"github.com/valyala/fasthttp" // The underlying HTTP engine.
 )
@@ -24,7 +26,7 @@ type HTMLRenderer interface {
 
 // Router is the main request router for the Xylium framework.
 // It manages route registration, middleware execution, request handling,
-// error processing, and server configuration.
+// error processing, server configuration, and application-level shared resources.
 type Router struct {
 	tree             *Tree        // Radix tree for efficient route matching.
 	globalMiddleware []Middleware // Middleware applied to all routes.
@@ -43,10 +45,28 @@ type Router struct {
 	// If not set, a default handler is used.
 	GlobalErrorHandler HandlerFunc
 
-	serverConfig            ServerConfig   // Configuration for the underlying fasthttp.Server.
-	HTMLRenderer            HTMLRenderer   // Optional HTML template renderer.
-	instanceMode            string         // Operating mode (e.g., "debug", "release") of this router instance.
-	internalRateLimitStores []LimiterStore // Stores internally created rate limiter stores that need closing on shutdown.
+	serverConfig ServerConfig // Configuration for the underlying fasthttp.Server.
+	HTMLRenderer HTMLRenderer // Optional HTML template renderer.
+	instanceMode string       // Operating mode (e.g., "debug", "release") of this router instance.
+
+	// appStore holds application-level shared data (e.g., service instances, configurations).
+	// Access is protected by appStoreMux.
+	appStore map[string]interface{}
+	// appStoreMux protects concurrent access to appStore.
+	appStoreMux sync.RWMutex
+
+	// closers stores io.Closer instances that need to be closed during graceful shutdown.
+	// This includes resources set via AppSet that implement io.Closer.
+	// Access is protected by closersMux.
+	closers []io.Closer
+	// closersMux protects concurrent access to the closers slice.
+	closersMux sync.Mutex
+
+	// internalRateLimitStores stores LimiterStore instances created internally by Xylium
+	// (e.g., default InMemoryStore for RateLimiter middleware) that require closing on shutdown.
+	internalRateLimitStores []LimiterStore
+	// internalRateLimitStoresMux protects internalRateLimitStores (added for safety, though current usage might be single-threaded for adds)
+	internalRateLimitStoresMux sync.Mutex
 }
 
 // Logger returns the configured logger for this router instance.
@@ -66,31 +86,26 @@ func New() *Router {
 
 // NewWithConfig creates a new Router instance with the provided ServerConfig.
 // It performs crucial initialization steps, including mode determination, logger setup,
-// and default handler assignments.
+// default handler assignments, and initialization of internal stores.
 func NewWithConfig(config ServerConfig) *Router {
-	updateGlobalModeFromEnvOnRouterInit()
-	effectiveMode := Mode()
+	updateGlobalModeFromEnvOnRouterInit() // Ensure mode is up-to-date with .env files etc.
+	effectiveMode := Mode()               // Get the final effective mode for this router instance.
 
-	// Logger initialization and configuration
+	// Logger initialization and configuration (code from previous response, assumed correct)
 	if config.Logger == nil {
-		baseLogCfg := DefaultLoggerConfig() // Start with absolute defaults for the logger config.
-		if config.LoggerConfig != nil {     // If user provided LoggerConfig, use its values as the base.
+		baseLogCfg := DefaultLoggerConfig()
+		if config.LoggerConfig != nil {
 			userProvidedLogCfg := *config.LoggerConfig
-			// Merge: take from userProvidedLogCfg if set, otherwise keep DefaultLoggerConfig values.
 			if userProvidedLogCfg.Output != nil {
 				baseLogCfg.Output = userProvidedLogCfg.Output
 			}
 			if userProvidedLogCfg.Formatter != "" {
 				baseLogCfg.Formatter = userProvidedLogCfg.Formatter
 			}
-			// For Level, ShowCaller, UseColor, these will be primarily driven by effectiveMode,
-			// but we honor user's explicit config if it's set.
 			baseLogCfg.Level = userProvidedLogCfg.Level
 			baseLogCfg.ShowCaller = userProvidedLogCfg.ShowCaller
 			baseLogCfg.UseColor = userProvidedLogCfg.UseColor
 		}
-
-		// Now, let the effectiveMode refine certain logger settings.
 		finalLogCfg := baseLogCfg
 		switch effectiveMode {
 		case DebugMode:
@@ -100,24 +115,20 @@ func NewWithConfig(config ServerConfig) *Router {
 		case TestMode:
 			finalLogCfg.Level = LevelDebug
 			finalLogCfg.ShowCaller = true
-			finalLogCfg.UseColor = false // Typically no color for test logs.
+			finalLogCfg.UseColor = false
 		case ReleaseMode:
 			finalLogCfg.Level = LevelInfo
 			finalLogCfg.ShowCaller = false
 			finalLogCfg.UseColor = false
 		}
-		// Ensure Formatter and Output from baseLogCfg (potentially user-defined) are preserved
-		// if not directly altered by mode logic (which they currently aren't).
 		finalLogCfg.Formatter = baseLogCfg.Formatter
 		finalLogCfg.Output = baseLogCfg.Output
-		if finalLogCfg.Output == nil { // Final safety check for output
+		if finalLogCfg.Output == nil {
 			finalLogCfg.Output = os.Stdout
 		}
-
 		config.Logger = NewDefaultLoggerWithConfig(finalLogCfg)
 		config.Logger.Debugf("Router using DefaultLogger, configured. EffectiveMode: %s, FinalLoggerConfig: %+v", effectiveMode, finalLogCfg)
 	} else {
-		// If a custom logger implementation is provided, skip Xylium's automatic configuration.
 		config.Logger.Warnf(
 			"A custom logger (type: %T) was provided. Automatic Xylium mode-based and LoggerConfig-based logger configuration is skipped.",
 			config.Logger,
@@ -130,7 +141,9 @@ func NewWithConfig(config ServerConfig) *Router {
 		globalMiddleware:        make([]Middleware, 0),
 		serverConfig:            config,
 		instanceMode:            effectiveMode,
-		internalRateLimitStores: make([]LimiterStore, 0), // Initialize the slice for internal stores.
+		appStore:                make(map[string]interface{}), // Initialize appStore.
+		closers:                 make([]io.Closer, 0),         // Initialize closers slice.
+		internalRateLimitStores: make([]LimiterStore, 0),      // Initialize internal stores slice.
 	}
 
 	// Set default handlers for common framework events.
@@ -149,21 +162,80 @@ func (r *Router) CurrentMode() string {
 }
 
 // Use adds global middleware(s) to the router's chain.
+// These middleware will be executed for every request handled by this router.
 func (r *Router) Use(middlewares ...Middleware) {
 	r.globalMiddleware = append(r.globalMiddleware, middlewares...)
 }
 
+// AppSet stores a key-value pair in the application-level store.
+// This store is shared across all requests handled by this router instance,
+// making it suitable for storing shared services, configurations, or connection pools.
+// If the provided `value` implements the `io.Closer` interface, it is automatically
+// registered via `RegisterCloser` to be closed during the router's graceful shutdown.
+// This method is thread-safe.
+func (r *Router) AppSet(key string, value interface{}) {
+	r.appStoreMux.Lock()
+	r.appStore[key] = value
+	r.appStoreMux.Unlock()
+
+	// Automatically register for graceful shutdown if the value implements io.Closer.
+	if closer, ok := value.(io.Closer); ok {
+		r.RegisterCloser(closer)
+	}
+}
+
+// AppGet retrieves a value from the application-level store by its key.
+// Returns the value and true if the key exists, otherwise nil and false.
+// This method is thread-safe.
+func (r *Router) AppGet(key string) (interface{}, bool) {
+	r.appStoreMux.RLock()
+	defer r.appStoreMux.RUnlock()
+	// Ensure appStore is initialized (should be by NewWithConfig).
+	if r.appStore == nil {
+		return nil, false
+	}
+	val, ok := r.appStore[key]
+	return val, ok
+}
+
+// RegisterCloser explicitly registers an `io.Closer` instance to be closed
+// during the router's graceful shutdown sequence.
+// This is useful for managing the lifecycle of resources that are not stored
+// in the `AppStore` but still need cleanup (e.g., a global logger file,
+// a background worker pool).
+// If the provided `closer` is nil, the method does nothing.
+// This method is thread-safe.
+func (r *Router) RegisterCloser(closer io.Closer) {
+	if closer == nil {
+		return // Do not register nil closers.
+	}
+	r.closersMux.Lock()
+	defer r.closersMux.Unlock()
+	// Optional: Add a check to prevent duplicate registration if performance allows
+	// and if closers can be meaningfully compared (pointer comparison is typical).
+	// for _, existing := range r.closers {
+	// 	if existing == closer {
+	// 		r.Logger().Debugf("Resource type %T already registered for shutdown, skipping re-registration.", closer)
+	// 		return
+	// 	}
+	// }
+	r.closers = append(r.closers, closer)
+	r.Logger().Debugf("Resource (type %T) explicitly registered for graceful shutdown.", closer)
+}
+
 // addInternalStore registers an internally created LimiterStore with the router.
-// This allows the router to call Close() on these stores during graceful shutdown.
-// This method is unexported and intended for internal framework use.
+// This method is unexported and intended for internal framework use (e.g., by RateLimiter middleware).
+// It ensures these internal stores are closed during graceful shutdown.
 func (r *Router) addInternalStore(store LimiterStore) {
 	if store == nil {
 		return
 	}
-	// Basic check to prevent adding the same store instance multiple times.
+	r.internalRateLimitStoresMux.Lock()
+	defer r.internalRateLimitStoresMux.Unlock()
+
 	for _, existingStore := range r.internalRateLimitStores {
-		if existingStore == store { // Pointer comparison.
-			r.Logger().Debugf("LimiterStore (type %T) attempted to be re-registered; registration skipped.", store)
+		if existingStore == store {
+			r.Logger().Debugf("Internal LimiterStore (type %T) already registered; registration skipped.", store)
 			return
 		}
 	}
@@ -172,219 +244,309 @@ func (r *Router) addInternalStore(store LimiterStore) {
 }
 
 // addRoute is an internal helper to register a new route.
+// It normalizes the path and associates the handler and route-specific middleware.
 func (r *Router) addRoute(method, path string, handler HandlerFunc, middlewares ...Middleware) {
 	if path == "" {
-		path = "/"
+		path = "/" // Default to root path if empty.
 	}
 	if path[0] != '/' {
-		panic("xylium: path must begin with '/' (e.g., \"/users\")")
+		// Ensure consistent error messaging with a clear example.
+		panic(fmt.Sprintf("xylium: path must begin with '/' (e.g., \"/users\" or \"/\"), got \"%s\"", path))
 	}
+	// `Tree.Add` will handle further normalization like trailing slashes.
 	r.tree.Add(method, path, handler, middlewares...)
 }
 
 // --- HTTP Method Route Registration ---
+// These methods provide convenient ways to register handlers for specific HTTP methods.
+// Each takes a path, a handler function, and optional route-specific middleware.
+
+// GET registers a new GET request handler with the given path.
 func (r *Router) GET(path string, handler HandlerFunc, middlewares ...Middleware) {
 	r.addRoute(MethodGet, path, handler, middlewares...)
 }
+
+// POST registers a new POST request handler with the given path.
 func (r *Router) POST(path string, handler HandlerFunc, middlewares ...Middleware) {
 	r.addRoute(MethodPost, path, handler, middlewares...)
 }
+
+// PUT registers a new PUT request handler with the given path.
 func (r *Router) PUT(path string, handler HandlerFunc, middlewares ...Middleware) {
 	r.addRoute(MethodPut, path, handler, middlewares...)
 }
+
+// DELETE registers a new DELETE request handler with the given path.
 func (r *Router) DELETE(path string, handler HandlerFunc, middlewares ...Middleware) {
 	r.addRoute(MethodDelete, path, handler, middlewares...)
 }
+
+// PATCH registers a new PATCH request handler with the given path.
 func (r *Router) PATCH(path string, handler HandlerFunc, middlewares ...Middleware) {
 	r.addRoute(MethodPatch, path, handler, middlewares...)
 }
+
+// HEAD registers a new HEAD request handler with the given path.
 func (r *Router) HEAD(path string, handler HandlerFunc, middlewares ...Middleware) {
 	r.addRoute(MethodHead, path, handler, middlewares...)
 }
+
+// OPTIONS registers a new OPTIONS request handler with the given path.
 func (r *Router) OPTIONS(path string, handler HandlerFunc, middlewares ...Middleware) {
 	r.addRoute(MethodOptions, path, handler, middlewares...)
 }
 
 // Handler is the core fasthttp.RequestHandlerFunc for the Xylium router.
+// It is passed to the fasthttp.Server. It acquires a Xylium Context, finds the
+// appropriate route, executes middleware and the handler, and manages error/panic recovery.
 func (r *Router) Handler(originalFasthttpCtx *fasthttp.RequestCtx) {
-	c := acquireCtx(originalFasthttpCtx)
-	c.setRouter(r)
-	defer releaseCtx(c)
+	c := acquireCtx(originalFasthttpCtx) // Acquire a Context from the pool.
+	c.setRouter(r)                       // Associate this router with the context.
+	defer releaseCtx(c)                  // Ensure context is released back to pool.
 
-	var errHandler error
-	requestScopedLogger := c.Logger()
+	var errHandler error              // To store error returned by handler chain or panic handler.
+	requestScopedLogger := c.Logger() // Get request-scoped logger early.
 
+	// Deferred function for panic recovery and final error handling.
 	defer func() {
 		if rec := recover(); rec != nil {
-			requestScopedLogger.Errorf("PANIC: %v\n%s", rec, string(debug.Stack()))
+			// A panic occurred during request processing.
+			// Log the panic with stack trace for debugging.
+			requestScopedLogger.Errorf("PANIC RECOVERED: %v\n%s", rec, string(debug.Stack()))
 			if r.PanicHandler != nil {
-				c.Set("panic_recovery_info", rec)
+				// Pass panic info to the custom PanicHandler.
+				c.Set(ContextKeyPanicInfo, rec) // Using const from error handling if defined
 				errHandler = r.PanicHandler(c)
 			} else {
+				// Fallback if no custom PanicHandler (though defaultPanicHandler should be set).
 				errHandler = NewHTTPError(StatusInternalServerError, "Internal server error due to panic.").WithInternal(fmt.Errorf("panic: %v", rec))
 			}
 		}
 
+		// If an error (from handler chain or panic recovery) needs to be processed.
 		if errHandler != nil {
-			if !c.ResponseCommitted() {
+			if !c.ResponseCommitted() { // Only handle if response hasn't been sent.
 				if r.GlobalErrorHandler != nil {
-					c.Set("handler_error_cause", errHandler)
+					c.Set(ContextKeyErrorCause, errHandler) // Using const from error handling
 					if globalErrHandlingErr := r.GlobalErrorHandler(c); globalErrHandlingErr != nil {
+						// Critical: Error occurred within the GlobalErrorHandler itself.
 						requestScopedLogger.Errorf("CRITICAL: Error within GlobalErrorHandler: %v (while handling original error: %v)", globalErrHandlingErr, errHandler)
+						// Send a very basic fallback error response.
 						c.Ctx.Response.SetStatusCode(StatusInternalServerError)
-						c.Ctx.Response.SetBodyString("Internal Server Error")
+						c.Ctx.Response.SetBodyString("Internal Server Error - Error handler failed") // More specific than just "Internal Server Error"
 						c.Ctx.Response.Header.SetContentType("text/plain; charset=utf-8")
 					}
-				} else { // Should not happen with default setup
-					requestScopedLogger.Errorf("Error (GlobalErrorHandler is nil): %v for %s %s. Sending fallback 500.", errHandler, c.Method(), c.Path())
+				} else {
+					// Should not happen if router is initialized correctly with defaultGlobalErrorHandler.
+					requestScopedLogger.Errorf("CRITICAL: GlobalErrorHandler is nil. Error: %v for %s %s. Sending raw 500.", errHandler, c.Method(), c.Path())
 					c.Ctx.Response.SetStatusCode(StatusInternalServerError)
-					c.Ctx.Response.SetBodyString("Internal Server Error")
+					c.Ctx.Response.SetBodyString("Internal Server Error - No global error handler")
 					c.Ctx.Response.Header.SetContentType("text/plain; charset=utf-8")
 				}
 			} else {
-				requestScopedLogger.Warnf("Response already committed, but an error was generated post-commitment: %v for %s %s", errHandler, c.Method(), c.Path())
+				// Response already sent, but an error was generated post-commitment. Log this.
+				requestScopedLogger.Warnf("Response already committed, but an error was generated post-commitment: %v for %s %s. This error cannot be sent to client.", errHandler, c.Method(), c.Path())
 			}
-		} else if !c.ResponseCommitted() && c.Method() != MethodHead { // Sanity check for unhandled responses
+		} else if !c.ResponseCommitted() && c.Method() != MethodHead {
+			// Sanity check: If no error occurred AND response wasn't committed, and it's not a HEAD request
+			// (where empty body is expected for 2xx), log a debug message.
+			// This helps identify handlers that might forget to send a response.
 			statusCode := c.Ctx.Response.StatusCode()
-			bodyLen := len(c.Ctx.Response.Body())
-			contentLengthHeader := c.Ctx.Response.Header.ContentLength()
-			isEffectivelyEmptyResponse := (statusCode == 0) || (statusCode == StatusOK && bodyLen == 0 && contentLengthHeader <= 0)
+			// Check if status implies no content or if body is genuinely empty
+			isNoContentStatus := (statusCode == StatusNoContent || statusCode == StatusNotModified)
+			isResponseEffectivelyEmpty := (len(c.Ctx.Response.Body()) == 0 && c.Ctx.Response.Header.ContentLength() <= 0)
 
-			if isEffectivelyEmptyResponse && statusCode != StatusNoContent {
+			if !isNoContentStatus && isResponseEffectivelyEmpty && statusCode < StatusBadRequest { // Only warn for non-error, non-no-content statuses
 				if r.CurrentMode() == DebugMode {
 					requestScopedLogger.Debugf(
-						"Handler for %s %s completed without sending response body or error (Status: %d, BodyLen: %d, ContentLength: %d). Ensure handlers explicitly send a response or use c.NoContent().",
-						c.Method(), c.Path(), statusCode, bodyLen, contentLengthHeader,
+						"Handler for %s %s completed without sending response body or explicit c.NoContent() (Status: %d). Ensure handlers always send a response.",
+						c.Method(), c.Path(), statusCode,
 					)
 				}
 			}
 		}
-	}()
+	}() // End of deferred function.
 
+	// --- Route Matching and Handler Execution ---
 	method := c.Method()
-	path := c.Path()
+	path := c.Path() // Path() in context already normalizes.
 	nodeHandler, routeMiddleware, params, allowedMethods := r.tree.Find(method, path)
 
 	if nodeHandler != nil {
-		c.Params = params
+		// Route found for the method and path.
+		c.Params = params // Set extracted path parameters in the context.
+
+		// Build the full middleware chain: global -> group (implicitly handled by Tree.Add for groups) -> route-specific.
+		// The Tree.Find returns middleware already combined from group and route.
+		// We prepend global middleware here.
 		finalChain := nodeHandler
+		// Apply route-specific middleware (returned by tree.Find, which includes group middleware).
 		for i := len(routeMiddleware) - 1; i >= 0; i-- {
 			finalChain = routeMiddleware[i](finalChain)
 		}
+		// Apply global middleware.
 		for i := len(r.globalMiddleware) - 1; i >= 0; i-- {
 			finalChain = r.globalMiddleware[i](finalChain)
 		}
-		c.handlers = []HandlerFunc{finalChain}
-		c.index = -1
-		errHandler = c.Next()
+
+		c.handlers = []HandlerFunc{finalChain} // Set the execution chain on the context.
+		c.index = -1                           // Reset handler index for c.Next().
+		errHandler = c.Next()                  // Start executing the chain.
 	} else {
-		if len(allowedMethods) > 0 { // Path exists, but not for this method (405)
-			c.Params = params
+		// No direct handler found for this method and path.
+		if len(allowedMethods) > 0 {
+			// Path exists, but not for this method (405 Method Not Allowed).
+			c.Params = params // Set params even for 405, as path structure might be relevant.
 			if r.MethodNotAllowedHandler != nil {
+				// Set "Allow" header; fasthttp might do this too, but explicit is fine.
 				c.SetHeader("Allow", strings.Join(allowedMethods, ", "))
 				errHandler = r.MethodNotAllowedHandler(c)
-			} else { // Should use default
+			} else {
+				// Should use default if not set, but as a fallback:
 				errHandler = NewHTTPError(StatusMethodNotAllowed, StatusText(StatusMethodNotAllowed))
 			}
-		} else { // Path does not exist (404)
+		} else {
+			// Path does not exist at all (404 Not Found).
 			if r.NotFoundHandler != nil {
 				errHandler = r.NotFoundHandler(c)
-			} else { // Should use default
+			} else {
+				// Should use default if not set, but as a fallback:
 				errHandler = NewHTTPError(StatusNotFound, StatusText(StatusNotFound))
 			}
 		}
 	}
 }
 
-// ServeFiles serves static files from a given filesystem root directory.
+// ServeFiles serves static files from a given filesystem root directory under a specified URL prefix.
+//
+// Parameters:
+//   - urlPathPrefix: The URL path prefix under which files will be served.
+//     Example: "/static" means requests to "/static/css/style.css" are handled.
+//     If serving from root, use "/" or "".
+//   - fileSystemRoot: The absolute or relative path to the directory on the server's
+//     filesystem containing the static files.
+//
+// Panics if `urlPathPrefix` contains route parameters (':' or '*') or if `fileSystemRoot` is invalid.
+// It uses `fasthttp.FS` for efficient file serving, which handles:
+//   - Serving `index.html` for directory requests (if `IndexNames` is set, default is "index.html").
+//   - Setting `Content-Type` based on file extension.
+//   - Byte range requests (`Accept-Ranges` header).
+//   - Compression (if `fasthttp.FS.Compress` is enabled, default true in Xylium's usage).
+//   - Custom 404 handling for files not found within the static root (returns JSON 404).
 func (r *Router) ServeFiles(urlPathPrefix string, fileSystemRoot string) {
 	if strings.Contains(urlPathPrefix, ":") || strings.Contains(urlPathPrefix, "*") {
-		panic("xylium: urlPathPrefix for ServeFiles cannot contain ':' or '*'")
+		panic("xylium: urlPathPrefix for ServeFiles cannot contain route parameters ':' or '*'")
 	}
+
 	cleanedFileSystemRoot, err := filepath.Abs(filepath.Clean(fileSystemRoot))
 	if err != nil {
 		panic(fmt.Sprintf("xylium: ServeFiles could not determine absolute path for fileSystemRoot '%s': %v", fileSystemRoot, err))
 	}
-	catchAllParamName := "filepath" // Parameter name for the file subpath.
-	normalizedUrlPathPrefix := ""
-	if urlPathPrefix != "" && urlPathPrefix != "/" {
-		normalizedUrlPathPrefix = "/" + strings.Trim(urlPathPrefix, "/")
-	} else if urlPathPrefix == "/" {
-		normalizedUrlPathPrefix = "/" // Explicit root serving.
+	// Check if the root directory exists.
+	if _, statErr := os.Stat(cleanedFileSystemRoot); os.IsNotExist(statErr) {
+		r.Logger().Warnf("ServeFiles: The specified fileSystemRoot directory '%s' (resolved to '%s') does not exist. Static file serving for '%s' might not work as expected.",
+			fileSystemRoot, cleanedFileSystemRoot, urlPathPrefix)
+		// Continue to register the route, but it will likely 404 until the directory is created.
 	}
 
+	// Normalize urlPathPrefix for route registration.
+	// Examples: "/static", "/public", "/", ""
+	normalizedUrlPathPrefix := "/" + strings.Trim(urlPathPrefix, "/")
+	if urlPathPrefix == "/" || urlPathPrefix == "" { // Handle root serving explicitly.
+		normalizedUrlPathPrefix = "/"
+	}
+
+	catchAllParamName := "filepath" // Name for the catch-all parameter representing the file's subpath.
 	routePath := ""
-	if normalizedUrlPathPrefix == "" || normalizedUrlPathPrefix == "/" { // Serving from application root.
+	if normalizedUrlPathPrefix == "/" {
+		// Serving from application root: e.g. GET /*filepath
 		routePath = "/*" + catchAllParamName
-		if normalizedUrlPathPrefix == "/" && routePath == "/*"+catchAllParamName {
-			// Ensure it doesn't become //*filepath if prefix was /
-			// This case is actually handled by tree.Add's normalization, but explicit here is fine.
-		}
-	} else { // Serving from a sub-path.
+	} else {
+		// Serving from a sub-path: e.g. GET /static/*filepath
 		routePath = normalizedUrlPathPrefix + "/*" + catchAllParamName
 	}
 
 	routerBaseLogger := r.Logger() // For fasthttp.FS PathNotFound callback.
 	fs := &fasthttp.FS{
 		Root:               cleanedFileSystemRoot,
-		IndexNames:         []string{"index.html"},
-		GenerateIndexPages: false, // Security: disable directory listing.
-		AcceptByteRange:    true,
-		Compress:           true, // Enable fasthttp's compression for static files.
+		IndexNames:         []string{"index.html"}, // Serve index.html for directory requests.
+		GenerateIndexPages: false,                  // Security: disable automatic directory listing.
+		AcceptByteRange:    true,                   // Support byte range requests.
+		Compress:           true,                   // Enable fasthttp's built-in compression for static files.
 		PathNotFound: func(originalFasthttpCtx *fasthttp.RequestCtx) {
+			// Custom handler for files not found within the fasthttp.FS scope.
+			// This provides a consistent JSON error response.
 			errorMsg := M{"error": "The requested static asset was not found."}
+			assetPath := string(originalFasthttpCtx.Path()) // Path fasthttp.FS attempted to serve
+
+			routerBaseLogger.Warnf(
+				"ServeFiles: Static asset not found by fasthttp.FS. URI: %s, FS Attempted Path: %s, FS Root: %s",
+				string(originalFasthttpCtx.RequestURI()), assetPath, cleanedFileSystemRoot,
+			)
+
 			originalFasthttpCtx.SetStatusCode(StatusNotFound)
 			originalFasthttpCtx.SetContentType("application/json; charset=utf-8")
 			if err := json.NewEncoder(originalFasthttpCtx.Response.BodyWriter()).Encode(errorMsg); err != nil {
+				// Fallback if JSON encoding fails (highly unlikely for a simple map).
 				routerBaseLogger.Errorf(
-					"Xylium ServeFiles: CRITICAL - Error encoding JSON for PathNotFound (URI: %s, Attempted Path: %s): %v.",
-					string(originalFasthttpCtx.RequestURI()),
-					string(originalFasthttpCtx.Path()), // Path fasthttp.FS attempted to serve
-					err,
+					"ServeFiles: CRITICAL - Error encoding JSON for PathNotFound (asset path: %s): %v.",
+					assetPath, err,
 				)
+				// fasthttp.RequestCtx.Error() could be used here as a last resort.
 			}
 		},
 	}
-	fileServerHandler := fs.NewRequestHandler() // fasthttp handler for serving files.
+	fileServerHandler := fs.NewRequestHandler() // Get fasthttp's file serving handler.
 
+	// Register a GET route that uses the catch-all parameter to serve files.
 	r.GET(routePath, func(c *Context) error {
+		// Extract the subpath of the requested file from the catch-all parameter.
 		requestedFileSubPath := c.Param(catchAllParamName)
-		// Path for fasthttp.FS must be relative to FS.Root and start with '/'.
-		pathForFasthttpFS := "/" + requestedFileSubPath
-		pathForFasthttpFS = filepath.Clean(pathForFasthttpFS) // Normalize (e.g., remove "..").
 
-		if pathForFasthttpFS == "." { // Request for the root of the static prefix.
-			pathForFasthttpFS = "/"
-		} else if !strings.HasPrefix(pathForFasthttpFS, "/") { // Ensure leading slash.
-			pathForFasthttpFS = "/" + pathForFasthttpFS
-		}
+		// The path for fasthttp.FS must be relative to its FS.Root and must start with '/'.
+		// Clean the path to prevent directory traversal issues (e.g., removing "..").
+		pathForFasthttpFS := "/" + filepath.Clean("/"+requestedFileSubPath) // Ensure leading slash and clean.
 
-		originalURI := c.Ctx.Request.RequestURI()      // Save for restoration.
-		c.Ctx.Request.SetRequestURI(pathForFasthttpFS) // fasthttp.FS uses RequestURI.
-		fileServerHandler(c.Ctx)                       // Delegate to fasthttp.
-		c.Ctx.Request.SetRequestURIBytes(originalURI)  // Restore original URI.
-		return nil                                     // Response handled by fasthttp.FS.
+		// fasthttp.FS expects RequestURI to be the path relative to its root.
+		// We temporarily modify the RequestURI for fasthttp.FS, then restore it.
+		originalURI := c.Ctx.Request.RequestURI()      // Save original RequestURI.
+		c.Ctx.Request.SetRequestURI(pathForFasthttpFS) // Set path for fasthttp.FS.
+		fileServerHandler(c.Ctx)                       // Delegate to fasthttp's file server.
+		c.Ctx.Request.SetRequestURIBytes(originalURI)  // Restore original RequestURI.
+
+		// The response is handled (and committed) by fileServerHandler.
+		// Return nil to indicate to Xylium that the response is managed.
+		return nil
 	})
+	r.Logger().Debugf("Static file serving configured for URL prefix '%s' from filesystem root '%s' via route '%s'",
+		normalizedUrlPathPrefix, cleanedFileSystemRoot, routePath)
 }
 
 // --- Route Grouping ---
+
 // RouteGroup allows organizing routes under a common path prefix and/or shared middleware.
+// It provides methods (GET, POST, etc.) similar to the Router for defining routes
+// within the group's scope.
 type RouteGroup struct {
-	router     *Router
-	prefix     string
-	middleware []Middleware
+	router     *Router      // Reference to the parent Router instance.
+	prefix     string       // The URL path prefix for this group.
+	middleware []Middleware // Middleware specific to this group.
 }
 
-// Group creates a new RouteGroup.
+// Group creates a new RouteGroup with the given URL prefix and optional group-level middleware.
+// The prefix is automatically normalized (e.g., leading/trailing slashes handled).
+// Middleware provided here will apply to all routes defined within this group and its sub-groups.
 func (r *Router) Group(urlPrefix string, middlewares ...Middleware) *RouteGroup {
-	normalizedPrefix := ""
-	if urlPrefix != "" && urlPrefix != "/" {
-		normalizedPrefix = "/" + strings.Trim(urlPrefix, "/")
-	} else if urlPrefix == "/" {
+	// Normalize the prefix: ensure leading slash, remove trailing slash unless it's just "/".
+	normalizedPrefix := "/" + strings.Trim(urlPrefix, "/")
+	if urlPrefix == "/" || urlPrefix == "" {
 		normalizedPrefix = "/"
 	}
+
+	// Make a copy of the provided middleware slice to avoid modification by the caller.
 	groupMiddleware := make([]Middleware, len(middlewares))
-	copy(groupMiddleware, middlewares) // Ensure a new slice.
+	copy(groupMiddleware, middlewares)
+
 	return &RouteGroup{
 		router:     r,
 		prefix:     normalizedPrefix,
@@ -392,80 +554,118 @@ func (r *Router) Group(urlPrefix string, middlewares ...Middleware) *RouteGroup 
 	}
 }
 
-// Use adds middleware to the RouteGroup.
+// Use adds middleware to the RouteGroup. This middleware will apply to all routes
+// subsequently defined within this group and any of its sub-groups.
+// It's appended to any middleware already defined for the group.
 func (rg *RouteGroup) Use(middlewares ...Middleware) {
 	rg.middleware = append(rg.middleware, middlewares...)
 }
 
-// addRoute is an internal helper for RouteGroup.
+// addRoute is an internal helper for RouteGroup to register a route.
+// It combines the group's prefix and middleware with the route's specific path and middleware.
 func (rg *RouteGroup) addRoute(method, relativePath string, handler HandlerFunc, middlewares ...Middleware) {
-	pathSegment := ""
-	if relativePath != "" && relativePath != "/" {
-		pathSegment = "/" + strings.Trim(relativePath, "/")
-	} else if relativePath == "/" { // e.g., group.GET("/", ...)
-		if rg.prefix == "" || rg.prefix == "/" { // Root group or prefix is "/"
-			pathSegment = "/"
-		} else { // Prefix is e.g., "/api", relativePath is "/" -> full path is "/api"
-			pathSegment = ""
+	// Normalize relativePath: ensure leading slash, remove trailing unless just "/".
+	normalizedRelativePath := "/" + strings.Trim(relativePath, "/")
+	if relativePath == "/" || relativePath == "" {
+		normalizedRelativePath = "/"
+	}
+
+	// Combine group prefix with relative path.
+	var fullPath string
+	if rg.prefix == "/" { // If group prefix is root
+		if normalizedRelativePath == "/" { // and relative path is also root
+			fullPath = "/" // final path is root
+		} else {
+			fullPath = normalizedRelativePath // final path is just the relative path
+		}
+	} else { // Group prefix is something like "/api"
+		if normalizedRelativePath == "/" { // and relative path is root
+			fullPath = rg.prefix // final path is the group prefix itself
+		} else {
+			fullPath = rg.prefix + normalizedRelativePath // final path is /api/users
 		}
 	}
-	fullPath := rg.prefix + pathSegment
-	if fullPath == "" {
-		fullPath = "/"
-	} // Ensure root path for Group("").GET("",...)
 
+	// Combine group middleware with route-specific middleware.
+	// Group middleware runs first, then route-specific middleware.
 	allApplicableMiddleware := make([]Middleware, 0, len(rg.middleware)+len(middlewares))
 	allApplicableMiddleware = append(allApplicableMiddleware, rg.middleware...)
 	allApplicableMiddleware = append(allApplicableMiddleware, middlewares...)
+
+	// Register the route on the parent router.
 	rg.router.addRoute(method, fullPath, handler, allApplicableMiddleware...)
 }
 
 // --- HTTP Method Registrations for RouteGroup ---
+// These methods mirror the Router's methods but operate within the group's scope.
+
+// GET registers a new GET request handler within the route group.
 func (rg *RouteGroup) GET(relativePath string, handler HandlerFunc, middlewares ...Middleware) {
 	rg.addRoute(MethodGet, relativePath, handler, middlewares...)
 }
+
+// POST registers a new POST request handler within the route group.
 func (rg *RouteGroup) POST(relativePath string, handler HandlerFunc, middlewares ...Middleware) {
 	rg.addRoute(MethodPost, relativePath, handler, middlewares...)
 }
+
+// PUT registers a new PUT request handler within the route group.
 func (rg *RouteGroup) PUT(relativePath string, handler HandlerFunc, middlewares ...Middleware) {
 	rg.addRoute(MethodPut, relativePath, handler, middlewares...)
 }
+
+// DELETE registers a new DELETE request handler within the route group.
 func (rg *RouteGroup) DELETE(relativePath string, handler HandlerFunc, middlewares ...Middleware) {
 	rg.addRoute(MethodDelete, relativePath, handler, middlewares...)
 }
+
+// PATCH registers a new PATCH request handler within the route group.
 func (rg *RouteGroup) PATCH(relativePath string, handler HandlerFunc, middlewares ...Middleware) {
 	rg.addRoute(MethodPatch, relativePath, handler, middlewares...)
 }
+
+// HEAD registers a new HEAD request handler within the route group.
 func (rg *RouteGroup) HEAD(relativePath string, handler HandlerFunc, middlewares ...Middleware) {
 	rg.addRoute(MethodHead, relativePath, handler, middlewares...)
 }
+
+// OPTIONS registers a new OPTIONS request handler within the route group.
 func (rg *RouteGroup) OPTIONS(relativePath string, handler HandlerFunc, middlewares ...Middleware) {
 	rg.addRoute(MethodOptions, relativePath, handler, middlewares...)
 }
 
-// Group creates a new sub-RouteGroup.
+// Group creates a new sub-RouteGroup nested within the current group.
+// The new sub-group inherits the prefix and middleware of its parent group.
+// Additional prefix segments and middleware can be specified for the sub-group.
 func (rg *RouteGroup) Group(relativePathPrefix string, middlewares ...Middleware) *RouteGroup {
-	pathSegment := ""
-	if relativePathPrefix != "" && relativePathPrefix != "/" {
-		pathSegment = "/" + strings.Trim(relativePathPrefix, "/")
-	} else if relativePathPrefix == "/" {
-		// If parent is root or "/", child prefix "/" means new prefix is just "/"
-		// If parent is "/api", child prefix "/" means new prefix is "/api" (no double slash)
-		if rg.prefix == "" || rg.prefix == "/" {
-			pathSegment = "/"
+	// Normalize the relative prefix for the new sub-group.
+	normalizedRelativePrefix := "/" + strings.Trim(relativePathPrefix, "/")
+	if relativePathPrefix == "/" || relativePathPrefix == "" {
+		normalizedRelativePrefix = "/"
+	}
+
+	// Combine parent group's prefix with the new sub-group's relative prefix.
+	var newFullPrefix string
+	if rg.prefix == "/" { // If parent group is root
+		if normalizedRelativePrefix == "/" { // and sub-group relative prefix is root
+			newFullPrefix = "/" // new full prefix remains root
 		} else {
-			pathSegment = ""
+			newFullPrefix = normalizedRelativePrefix // new full prefix is just the sub-group's relative
+		}
+	} else { // Parent group has a non-root prefix (e.g., "/api")
+		if normalizedRelativePrefix == "/" { // and sub-group relative prefix is root
+			newFullPrefix = rg.prefix // new full prefix is same as parent's ("/api")
+		} else {
+			newFullPrefix = rg.prefix + normalizedRelativePrefix // new full prefix is "/api/admin"
 		}
 	}
 
-	newFullPrefix := rg.prefix + pathSegment
-	if newFullPrefix == "" {
-		newFullPrefix = "/"
-	}
-
+	// Combine parent group's middleware with the new sub-group's specific middleware.
+	// Parent middleware runs first, then sub-group's middleware.
 	combinedMiddleware := make([]Middleware, 0, len(rg.middleware)+len(middlewares))
 	combinedMiddleware = append(combinedMiddleware, rg.middleware...)
 	combinedMiddleware = append(combinedMiddleware, middlewares...)
+
 	return &RouteGroup{
 		router:     rg.router,
 		prefix:     newFullPrefix,
