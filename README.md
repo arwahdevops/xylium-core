@@ -1,63 +1,70 @@
 # Xylium 🚀
 
-**Xylium is a high-performance Go web framework, built on [fasthttp](https://github.com/valyala/fasthttp), designed for speed, ease of use, developer productivity, and robust application development.**
+**Xylium: The Ultra-Fast, Secure, and Stable Go Framework. Engineered for Maximum Performance with a Slim Yet Powerful Codebase.**
 
-Xylium offers an expressive and familiar API (inspired by popular frameworks like Gin/Echo/Fiber) while leveraging the raw efficiency of fasthttp. If you're looking for `fasthttp`'s speed without sacrificing development comfort and modern Go practices, Xylium might be for you!
+Xylium is a new-generation Go web framework, built on [fasthttp](https://github.com/valyala/fasthttp), that prioritizes **security**, **system stability**, **raw performance**, and **development speed** without sacrificing ease of use. With an exceptionally slim core codebase, Xylium gives you the full power of `fasthttp` through an expressive, modern API, complemented by an ecosystem of **Advanced Connectors** that are continuously updated and expanded.
 
 ## Table of Contents
 
-*   [✨ Key Features](#-key-features)
-*   [💡 Philosophy](#-philosophy)
-*   [🚀 Getting Started](#-getting-started)
+*   [🔥 Why Xylium? A Rock-Solid Foundation for Your Applications](#-why-xylium-a-rock-solid-foundation-for-your-applications)
+    *   [🚄 Extreme Performance & Memory Efficiency](#-extreme-performance--memory-efficiency)
+    *   [🛡️ Security as a Top Priority](#️-security-as-a-top-priority)
+    *   [⚙️ Battle-Tested System Stability](#️-battle-tested-system-stability)
+    *   [💡 Slim Codebase, Powerful Features](#-slim-codebase-powerful-features)
+    *   [🔌 Advanced & Evolving Connector Ecosystem](#-advanced--evolving-connector-ecosystem)
+*   [✨ Key Features at a Glance](#-key-features-at-a-glance)
+*   [🚀 Getting Started with Xylium](#-getting-started-with-xylium)
     *   [Prerequisites](#prerequisites)
     *   [Installation](#installation)
-    *   [Simple Usage Example](#simple-usage-example)
-    *   [Operating Modes](#operating-modes)
-*   [📖 Documentation](#-documentation)
-*   [🛠️ Contributing](#️-contributing)
+    *   [Quick & Secure "Hello World" Example](#quick--secure-hello-world-example)
+*   [📖 Comprehensive Documentation](#-comprehensive-documentation)
+*   [🛣️ Roadmap & Contributing](#️-roadmap--contributing)
+*   [💬 Community](#-community)
 *   [📜 License](#-license)
 
-## ✨ Key Features
+## 🔥 Why Xylium? A Rock-Solid Foundation for Your Applications
 
-*   **Blazing Fast Performance**: Built on `fasthttp`, one of Go's fastest HTTP engines. Utilizes `sync.Pool` for `xylium.Context` objects to minimize memory allocations and reduce GC overhead.
-*   **Expressive & Intuitive API**: A feature-rich `xylium.Context` provides helpers for request parsing (path/query params, form data), response generation (JSON, XML, HTML, String, File, etc.), data binding, and validation. The API is designed to be familiar and reduce boilerplate.
-*   **Idiomatic Go Context Integration**: Each `xylium.Context` carries a standard Go `context.Context` accessible via `c.GoContext()`. This enables seamless integration with libraries expecting `context.Context` for operations like database queries, external API calls, and facilitates cancellation, deadlines, and request-scoped value propagation throughout your application.
-*   **Fast Radix Tree Routing**: Employs an efficient radix tree for routing, supporting static paths, named path parameters (e.g., `/users/:id`), and catch-all parameters (e.g., `/static/*filepath`). Routes are matched with clear prioritization: static > parameter > catch-all.
-*   **Flexible Middleware**: Easily apply global, route group-specific, or individual route middleware using the standard `func(next xylium.HandlerFunc) xylium.HandlerFunc` pattern. Xylium includes a suite of common built-in middleware:
-    *   **Logger**: Automatic request logging.
-    *   **Gzip**: Response compression.
-    *   **CORS**: Cross-Origin Resource Sharing header management.
-    *   **CSRF**: Cross-Site Request Forgery protection with constant-time token comparison.
-    *   **BasicAuth**: HTTP Basic Authentication.
-    *   **RateLimiter**: Request rate limiting with configurable stores (in-memory default).
-    *   **RequestID**: Injects a unique ID into each request for tracing.
-    *   **Timeout**: Context-aware request timeout handling.
-*   **Route Grouping**: Organize your routes effortlessly with path prefixes and apply group-scoped middleware, promoting modular application design.
-*   **Centralized Error Handling**: Handlers return an `error`. Xylium's `GlobalErrorHandler` processes these errors centrally, allowing for consistent error responses and logging. Custom `xylium.HTTPError` provides full control over status codes and client-facing error messages. Panics are also recovered and handled gracefully.
-*   **Operating Modes (Debug, Test, Release)**: Configure framework behavior (e.g., logging verbosity, error detail) for different environments via the `XYLIUM_MODE` environment variable or programmatically with `xylium.SetMode()`. **Debug mode is the default**, providing more verbose logging and detailed error information for development.
-*   **Data Binding & Validation**: Easily bind request payloads (JSON, XML, Form, Query) to Go structs. Integrated validation powered by `go-playground/validator/v10` allows for struct field validation using tags.
-*   **Comprehensive Server Configuration & Graceful Shutdown**:
-    *   Full control over underlying `fasthttp.Server` settings via `xylium.ServerConfig`.
-    *   Built-in graceful shutdown (`app.Start()` or `app.ListenAndServeGracefully()`) handles OS signals (SIGINT, SIGTERM), allowing active requests to complete before shutting down.
-    *   Graceful shutdown also includes **automatic cleanup of internal resources**, such as default stores created by certain middleware (e.g., the in-memory store for the RateLimiter if not user-provided).
-*   **Customizable & Contextual Logger**:
-    *   Integrated, auto-configured logger based on Xylium's operating mode.
-    *   `app.Logger()` for application-level logging (startup, general messages).
-    *   `c.Logger()` for request-scoped logging, automatically including `request_id` (if `RequestID` middleware is used) and other contextual fields (e.g., `trace_id`, `span_id` if set in context).
-    *   Supports detailed `xylium.LoggerConfig` for fine-grained control over `DefaultLogger` behavior (level, format, caller info, color).
-    *   Can be entirely replaced with a custom `xylium.Logger` implementation.
-*   **Static File Serving**: Simple and secure static file serving using `app.ServeFiles("/prefix", "./static-directory")`, with support for index files and configurable options.
-*   **Minimalist yet Extendable Core**: Provides a strong, lean foundation without excessive "magic," making it easy to understand, extend, and integrate with other Go libraries.
+Xylium isn't just another fast framework; it's designed from the ground up with core principles that ensure your applications run reliably and securely:
 
-## 💡 Philosophy
+*   🚄 **Extreme Performance & Memory Efficiency:**
+    *   Built directly on `fasthttp`, one of Go's fastest HTTP engines.
+    *   Aggressive use of `sync.Pool` for `xylium.Context` and other internal objects, minimizing memory allocations and GC overhead.
+    *   Optimized Radix Tree routing for high-speed route matching.
+    *   **The Result:** Low latency, high throughput, and a minimal memory footprint.
 
-*   **Speed and Efficiency**: Leverage the power of `fasthttp` for high-throughput, low-latency applications. Minimize allocations and optimize critical paths.
-*   **Developer Productivity**: Provide an API that is expressive, reduces boilerplate, and accelerates development cycles.
-*   **Simplicity & Clarity**: Keep the core framework lean, easy to understand, and avoid overly complex abstractions.
-*   **Flexibility & Customization**: Allow developers to customize key aspects like error handling, logging, validation, and server behavior to fit their specific needs.
-*   **Robustness & Modern Go Practices**: Embrace idiomatic Go patterns, prioritize resource safety (e.g., `context.Context`, graceful shutdown), and provide tools for building reliable, production-ready applications.
+*   🛡️ **Security as a Top Priority:**
+    *   **Built-in Security Middleware:** CSRF protection (Double Submit Cookie with constant-time token comparison), security headers (XSS, Content Sniffing, Frame Options), and robust CORS management.
+    *   **Integrated Input Validation:** Secure data binding with validation powered by `go-playground/validator/v10` to prevent malicious input.
+    *   **Leak-Resistant Design:** Careful Go context management and comprehensive graceful shutdown help prevent resource leaks.
+    *   **No Dangerous "Magic":** A transparent and easily auditable core codebase.
 
-## 🚀 Getting Started
+*   ⚙️ **Battle-Tested System Stability:**
+    *   **Comprehensive Graceful Shutdown:** Handles OS signals (SIGINT, SIGTERM) to finish active requests and **clean up all registered resources** (including connectors) before exiting.
+    *   **Centralized Error & Panic Handling:** Robust `GlobalErrorHandler` and `PanicHandler` ensure errors are handled consistently and don't crash the server. Stack traces are logged for debugging.
+    *   **Operating Modes (Debug, Test, Release):** Customizable framework behavior (logging, error detail) for development, testing, and production environments, enhancing predictability.
+
+*   💡 **Slim Codebase, Powerful Features:**
+    *   **Minimalist Core:** Xylium-core remains focused on essential web functionalities, keeping it lightweight and easy to understand.
+    *   **Expressive & Modern API:** Inspired by popular frameworks, reducing boilerplate and boosting developer productivity without sacrificing control.
+    *   **Full Go `context.Context` Integration:** Seamless context propagation for cancellation, deadlines, and request-scoped values—critical for microservices architectures.
+
+*   🔌 **Advanced & Evolving Connector Ecosystem:**
+    *   **Effortless Integration:** Separate connector modules (`xylium-gorm`, `xylium-redis`, etc.) simplify connections to databases and third-party services.
+    *   **Best Practices Built-In:** Connectors automatically leverage Xylium's `c.GoContext()` and `c.Logger()` for consistency and observability.
+    *   **Lifecycle Management:** Connectors implementing `io.Closer` are automatically managed by Xylium's graceful shutdown.
+    *   **Always Updated & Expanding:** We are committed to continuously updating existing connectors and adding support for new popular services based on community needs. *(See [Xylium Connectors Documentation](Docs/XyliumConnectors.md) for a full list)*
+
+## ✨ Key Features at a Glance
+
+*   **Fast Routing:** Radix tree with named parameters and catch-all routes.
+*   **Flexible Middleware:** Global, group, or per-route. Includes Logger, Gzip, CORS, CSRF, BasicAuth, RateLimiter, RequestID, Timeout, OpenTelemetry (OTel).
+*   **Data Binding & Validation:** JSON, XML, Form, Query to Go structs with tag-based validation.
+*   **Contextual Logger:** `app.Logger()` and `c.Logger()` with structured output (Text/JSON) and configurable levels.
+*   **Full Server Configuration:** Control over `fasthttp.Server` via `xylium.ServerConfig`.
+*   **Static File Serving:** Secure and efficient.
+*   **HTTPS Support:** Easily enabled.
+
+## 🚀 Getting Started with Xylium
 
 ### Prerequisites
 
@@ -67,138 +74,77 @@ Xylium offers an expressive and familiar API (inspired by popular frameworks lik
 
 ```bash
 go get -u github.com/arwahdevops/xylium-core
+# For connectors (example):
+# go get -u github.com/arwahdevops/xylium-gorm
 ```
 
-### Simple Usage Example
-
-Create a `main.go` file:
+### Quick & Secure "Hello World" Example
 
 ```go
 package main
 
 import (
-	"net/http" // Standard Go HTTP status codes
-
+	"net/http"
+	"time" // For Timeout example
 	"github.com/arwahdevops/xylium-core/src/xylium"
-	// "context" // Import if you plan to use c.GoContext() directly for advanced scenarios
-	// "time"    // Import for context.WithTimeout example
 )
 
 func main() {
-	// Initialize Xylium.
-	// By default, Xylium starts in DebugMode.
-	// The logger is auto-configured: DebugMode provides LevelDebug, caller info, and colors (if TTY).
+	// Xylium.SetMode(xylium.ReleaseMode) // Uncomment for production mode
+
 	app := xylium.New()
 
-	// Define a simple GET route for the root path.
-	// Responds with JSON: {"message": "Hello, Xylium!", "mode": "debug"}
+	// Basic middleware for security and observability
+	app.Use(xylium.RequestID())      // Add a unique ID to each request
+	// app.Use(xylium.CSRF())        // Enable CSRF protection (further configuration might be needed)
+	app.Use(xylium.Timeout(15 * time.Second)) // Request timeout
+
 	app.GET("/", func(c *xylium.Context) error {
-		// Access the Go context if needed for operations like database queries or external calls
-		// goCtx := c.GoContext()
-		// Example: db.QueryRowContext(goCtx, "SELECT ...")
-
-		// Use the request-scoped logger. It will include 'request_id' if RequestID middleware is used.
-		c.Logger().Infof("Serving root path. Request path: %s. Go context available: %v", c.Path(), c.GoContext() != nil)
-		return c.JSON(http.StatusOK, xylium.M{
-			"message": "Hello, Xylium!",
-			"mode":    c.RouterMode(), // c.RouterMode() gives the mode of the router handling this context
-		})
+		c.Logger().Infof("Request received for path: %s, RequestID: %s", c.Path(), c.MustGet(xylium.ContextKeyRequestID))
+		return c.JSON(http.StatusOK, xylium.M{"message": "Hello from Secure & Fast Xylium!"})
 	})
 
-	// Define a route with a path parameter.
-	// Example: GET /hello/John -> Responds with string: "Hello, John!"
-	app.GET("/hello/:name", func(c *xylium.Context) error {
-		name := c.Param("name")
-		c.Logger().Infof("Greeting user: %s", name)
-		// Example of deriving a new Go context with a deadline
-		// goCtx, cancel := context.WithTimeout(c.GoContext(), 50*time.Millisecond)
-		// defer cancel()
-		// Use goCtx for operations that should respect this deadline
-		return c.String(http.StatusOK, "Hello, %s!", name)
-	})
-	
-	listenAddr := ":8080"
-	// Use the application's base logger for startup messages.
-	// This logger reflects the auto-configuration based on Xylium's operating mode.
-	app.Logger().Infof("Server starting on http://localhost%s (Mode: %s)", listenAddr, app.CurrentMode())
-	
-	// Start the server. app.Start() provides graceful shutdown.
-	// For fatal startup errors, app.Logger().Fatalf() is appropriate.
-	if err := app.Start(listenAddr); err != nil {
-		app.Logger().Fatalf("Error starting server: %v", err)
+	app.Logger().Infof("Xylium Server (%s mode) starting on :8080", app.CurrentMode())
+	if err := app.Start(":8080"); err != nil { // app.Start() includes graceful shutdown
+		app.Logger().Fatalf("Failed to start server: %v", err)
 	}
 }
 ```
 
-Run the application:
+*(See the [Full Showcase Example](examples/unified_showcase.go) for a more comprehensive demonstration of features.)*
 
-```bash
-# Run the application (defaults to DebugMode)
-go run main.go
+## 📖 Comprehensive Documentation
 
-# To run in ReleaseMode (info-level logging, no caller info/colors)
-XYLIUM_MODE=release go run main.go
+Explore the full potential of Xylium through our detailed documentation:
 
-# To run in TestMode
-XYLIUM_MODE=test go run main.go
-```
+*   **Server Basics:** `Docs/ServerBasics.md`
+*   **Routing:** `Docs/Routing.md`
+*   **Request Handling:** `Docs/RequestHandling.md`
+*   **Response Handling:** `Docs/ResponseHanding.md`
+*   **Data Binding & Validation:** `Docs/ContextBinding.md`
+*   **Middleware:** `Docs/Middleware.md`
+*   **Logging:** `Docs/Logging.md`
+*   **Error Handling:** `Docs/ErrorHandling.md`
+*   **Go Context Integration:** `Docs/GoContextIntegration.md`
+*   **Advanced Configuration:** `Docs/AdvancedConfiguration.md`
+*   **OpenTelemetry (OTel):** `Docs/OpenTelemetry.md`
+*   **Xylium Connectors:** `Docs/XyliumConnectors.md` (and individual connector repositories)
 
-You can then access:
-*   `http://localhost:8080/`
-*   `http://localhost:8080/hello/yourname`
+## 🛣️ Roadmap & Contributing
 
-### Operating Modes
+Xylium is an actively developed project. We are always looking for ways to improve performance, security, and the developer experience.
 
-Xylium supports different operating modes (`debug`, `test`, `release`) which can alter its behavior, such as logging verbosity, error message details to the client, and default configurations for some components. **The default mode is `debug`**.
+**Brief Roadmap:**
+*   [ ] Expansion of the Advanced Connectors list (Kafka, ElasticSearch, etc.).
+*   [ ] More integrated WebSocket support.
+*   [ ] CLI tool for project scaffolding.
+*   [ ] Public benchmarks against other frameworks.
 
-You can set the mode in two ways, with the following precedence (highest to lowest):
+We welcome contributions of all kinds! Report bugs, suggest features, improve documentation, or submit Pull Requests. Please see `CONTRIBUTING.md` (if available) for guidelines.
 
-1.  **Programmatically (Highest Priority):**
-    Call `xylium.SetMode()` *before* creating your Xylium application instance (`xylium.New()`). This overrides any environment variable settings.
-    ```go
-    package main
+## 💬 Community
 
-    import "github.com/arwahdevops/xylium-core/src/xylium"
-
-    func main() {
-        xylium.SetMode(xylium.ReleaseMode) // or xylium.TestMode, xylium.DebugMode
-        
-        app := xylium.New() 
-        // ... your application logic ...
-        // app.CurrentMode() will now be "release"
-        // app.Logger() will be configured for ReleaseMode.
-    }
-    ```
-2.  **Environment Variable (Overrides internal default):**
-    Set the `XYLIUM_MODE` environment variable before running your application:
-    ```bash
-    XYLIUM_MODE=release go run main.go
-    ```
-3.  **Internal Default (Lowest Priority):**
-    If neither of the above is used, Xylium defaults to `DebugMode`.
-
-You can check the current effective mode of a router instance using `app.CurrentMode()` or `c.RouterMode()` within a handler. Xylium's `DefaultLogger` is automatically configured based on this effective mode (e.g., log level, color output, caller info).
-
-## 📖 Documentation
-
-For more detailed examples and API usage, please refer to:
-*   The files in the `examples/` directory within this repository (especially `unified_showcase.go` for a comprehensive demonstration).
-*   The `Docs/` file for concise syntax examples of common use-cases.
-*   Source code comments, which provide in-depth explanations of specific functions, structs, and configurations.
-
-(A full documentation website is planned for the future!)
-
-## 🛠️ Contributing
-
-Contributions are always welcome! Whether it's bug reports, feature requests, documentation improvements, or code contributions, your help is appreciated.
-
-Please consider the following when contributing:
-*   **Open an Issue:** For bugs or significant feature proposals, please open an issue first to discuss the problem or idea.
-*   **Pull Requests:** For fixes and improvements, please submit a pull request.
-    *   Ensure your code adheres to Go best practices and the existing style of the project.
-    *   Write clear, concise commit messages.
-    *   Add tests for any new functionality or bug fixes.
-    *   Update documentation (README, examples, code comments) as necessary.
+*(This section can be added later if a forum, Discord, or mailing list is established)*
 
 ## 📜 License
 
