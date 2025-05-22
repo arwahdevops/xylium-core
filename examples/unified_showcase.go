@@ -7,10 +7,12 @@ import (
 	"net/http" // Diperlukan untuk http.StatusCreated, http.StatusOK, dll.
 	"os"
 	"path/filepath"
+	"strings" // <<< TAMBAHKAN IMPORT INI
 	"sync"
 	"time"
 
 	"github.com/arwahdevops/xylium-core/src/xylium"
+	// "github.com/go-playground/validator/v10" // Tidak perlu di sini jika DefaultValidator cukup
 )
 
 // --- Model Data ---
@@ -91,7 +93,7 @@ func main() {
 		xylium.WithCleanupInterval(5*time.Minute),
 		xylium.WithLogger(appLogger.WithFields(xylium.M{"component": "SharedRateLimitStore"})),
 	)
-	// defer sharedRateLimitStore.Close()
+	app.RegisterCloser(sharedRateLimitStore)
 
 	app.Use(xylium.RequestID())
 	app.Use(simpleRequestLoggerMiddleware())
@@ -100,24 +102,37 @@ func main() {
 		Timeout: 15 * time.Second,
 		Message: "Sorry, the request took too long to process.",
 	}))
-	app.Use(xylium.Gzip()) // Menggunakan default Xylium untuk Gzip
-	app.Use(xylium.CORS())
-	csrfConfig := xylium.DefaultCSRFConfig
-	csrfConfig.CookieSecure = false
-	app.Use(xylium.CSRFWithConfig(csrfConfig))
+	app.Use(xylium.Gzip())
+	corsConfig := xylium.DefaultCORSConfig
+	corsConfig.AllowOrigins = []string{"http://localhost:3000", "https://myfrontend.com"}
+	app.Use(xylium.CORSWithConfig(corsConfig))
+
+	csrfSecureValue := false
+	if app.CurrentMode() == xylium.ReleaseMode {
+		secureTrue := true
+		csrfSecureValue = secureTrue
+	}
+	csrfConfigVar := xylium.DefaultCSRFConfig
+	csrfConfigVar.CookieSecure = &csrfSecureValue
+	app.Use(xylium.CSRFWithConfig(csrfConfigVar))
+
 	app.Use(xylium.RateLimiter(xylium.RateLimiterConfig{
 		MaxRequests:    100,
 		WindowDuration: 1 * time.Minute,
 		Store:          sharedRateLimitStore,
-		Skip:           func(c *xylium.Context) bool { return c.Path() == "/health" },
+		Skip: func(c *xylium.Context) bool {
+			return c.Path() == "/health" || strings.HasPrefix(c.Path(), "/static/") // `strings` sekarang terdefinisi
+		},
 		Message:        "You have made too many requests globally. Please try again later.",
+		LoggerForStore: appLogger.WithFields(xylium.M{"component": "GlobalRateLimiterStore"}),
 	}))
 
 	app.GET("/", func(c *xylium.Context) error {
+		reqID, _ := c.Get(xylium.ContextKeyRequestID)
 		return c.JSON(http.StatusOK, xylium.M{
 			"message":    "Welcome to Xylium Unified Showcase!",
 			"mode":       c.RouterMode(),
-			"request_id": c.MustGet(xylium.ContextKeyRequestID),
+			"request_id": reqID,
 		})
 	})
 
@@ -131,8 +146,9 @@ func main() {
 
 	app.GET("/greet/:name", func(c *xylium.Context) error {
 		name := c.Param("name")
-		greeting := c.QueryParam("greeting")
-		if greeting == "" {
+		// PERBAIKAN UNTUK QueryParamDefault:
+		greeting := c.QueryParam("greeting") // Ambil query param
+		if greeting == "" {                  // Jika kosong, set default
 			greeting = "Hello"
 		}
 		return c.String(http.StatusOK, "%s, %s! Welcome to Xylium.", greeting, name)
@@ -148,7 +164,6 @@ func main() {
 		return c.JSON(http.StatusOK, xylium.M{"applied_filters": filter, "results_count": fmt.Sprintf("Placeholder count for term: %s", filter.Term)})
 	})
 
-	// Handler untuk POST /items dengan perbaikan status code
 	app.POST("/items", func(c *xylium.Context) error {
 		var input CreateItemInput
 		if err := c.BindAndValidate(&input); err != nil {
@@ -171,7 +186,7 @@ func main() {
 	})
 
 	app.GET("/error/custom", func(c *xylium.Context) error {
-		return xylium.NewHTTPError(http.StatusPaymentRequired, "This feature requires a subscription.").WithInternal(errors.New("subscription_check_failed"))
+		return xylium.NewHTTPError(http.StatusPaymentRequired, "This feature requires a subscription.").WithInternal(errors.New("subscription_check_failed_internal_details"))
 	})
 	app.GET("/error/generic", func(c *xylium.Context) error {
 		return errors.New("simulated generic internal error")
@@ -181,9 +196,13 @@ func main() {
 	})
 
 	app.GET("/csrf-token", func(c *xylium.Context) error {
-		token, _ := c.Get(csrfConfig.ContextTokenKey)
+		token, exists := c.Get(csrfConfigVar.ContextTokenKey)
+		if !exists {
+			return xylium.NewHTTPError(http.StatusInternalServerError, "CSRF token not found in context")
+		}
 		return c.JSON(http.StatusOK, xylium.M{"csrf_token": token})
 	})
+
 	app.POST("/form-protected", func(c *xylium.Context) error {
 		return c.JSON(http.StatusOK, xylium.M{"status": "CSRF token valid, form processed"})
 	})
@@ -193,21 +212,31 @@ func main() {
 	{
 		apiV1.GET("/info", func(c *xylium.Context) error {
 			user, _ := c.Get("authenticated_user")
-			return c.JSON(http.StatusOK, xylium.M{"api_version": "v1", "user": user, "message": "Welcome to API v1"})
+			return c.JSON(http.StatusOK, xylium.M{
+				"api_version": "v1",
+				"user":        user,
+				"message":     "Welcome to API v1 (protected by API Key)",
+			})
 		})
 	}
 
 	adminRouteKeyGenerator := func(c *xylium.Context) string { return "admin_route_limit:" + c.RealIP() }
 	adminGroup := app.Group("/admin")
-	adminGroup.Use(xylium.BasicAuth(func(username, password string, c *xylium.Context) (interface{}, bool, error) {
-		if username == "admin" && password == "securePass123" {
-			return map[string]string{"username": username, "role": "administrator"}, true, nil
-		}
-		return nil, false, nil
+	adminGroup.Use(xylium.BasicAuthWithConfig(xylium.BasicAuthConfig{
+		Validator: func(username, password string, c *xylium.Context) (interface{}, bool, error) {
+			if username == "admin" && password == "securePass123" {
+				return map[string]string{"username": username, "role": "administrator"}, true, nil
+			}
+			return nil, false, nil
+		},
+		Realm: "Admin Section",
 	}))
 	adminGroup.Use(xylium.RateLimiter(xylium.RateLimiterConfig{
-		MaxRequests: 5, WindowDuration: 1 * time.Minute, Store: sharedRateLimitStore,
-		Message: "Too many login attempts or admin actions.", KeyGenerator: adminRouteKeyGenerator,
+		MaxRequests:    5,
+		WindowDuration: 1 * time.Minute,
+		Store:          sharedRateLimitStore,
+		Message:        "Too many login attempts or admin actions. Please wait.",
+		KeyGenerator:   adminRouteKeyGenerator,
 	}))
 	{
 		adminGroup.GET("/dashboard", func(c *xylium.Context) error {
@@ -219,15 +248,20 @@ func main() {
 	app.GET("/frequent-resource", func(c *xylium.Context) error {
 		return c.String(http.StatusOK, "Accessed frequent resource.")
 	}, xylium.RateLimiter(xylium.RateLimiterConfig{
-		MaxRequests: 2, WindowDuration: 5 * time.Second, Store: sharedRateLimitStore,
-		Message: "You are accessing this frequent resource too often.",
+		MaxRequests:    2,
+		WindowDuration: 5 * time.Second,
+		Store:          sharedRateLimitStore,
+		Message:        "You are accessing this frequent resource too often.",
 	}))
 
-	staticDir := "./public_html"
+	staticDir := "./public_html_showcase"
 	if _, err := os.Stat(staticDir); os.IsNotExist(err) {
 		appLogger.Warnf("Static directory '%s' not found, creating for demo.", staticDir)
 		_ = os.Mkdir(staticDir, 0755)
-		_ = os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("<h1>Xylium Static Content</h1>"), 0644)
+		indexContent := `<!DOCTYPE html><html><head><title>Xylium Static</title></head><body><h1>Xylium Static Content</h1><p><a href="/static/other.html">Other Page</a></p></body></html>`
+		_ = os.WriteFile(filepath.Join(staticDir, "index.html"), []byte(indexContent), 0644)
+		otherContent := `<!DOCTYPE html><html><head><title>Other Page</title></head><body><h1>Another Static Page</h1><p><a href="/static/">Back to Index</a></p></body></html>`
+		_ = os.WriteFile(filepath.Join(staticDir, "other.html"), []byte(otherContent), 0644)
 	}
 	app.ServeFiles("/static", staticDir)
 	appLogger.Infof("Serving static files from '%s' under URL '/static'", staticDir)
@@ -237,7 +271,8 @@ func main() {
 	if err := app.Start(listenAddr); err != nil {
 		appLogger.Fatalf("Failed to start Xylium server: %v", err)
 	}
-	appLogger.Info("Xylium server has shut down.")
+
+	appLogger.Info("Xylium server has shut down gracefully.")
 }
 
 func min(a, b int) int {
