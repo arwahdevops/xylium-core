@@ -1,9 +1,10 @@
+// src/xylium/middleware_timeout.go
 package xylium
 
 import (
-	"context" // For context.WithTimeout and context.Done().
-	"fmt"     // For string formatting.
-	"time"    // For time.Duration.
+	"context"
+	"fmt"
+	"time" // Diperlukan untuk time.Duration dan time.After
 )
 
 // TimeoutConfig defines the configuration for the request Timeout middleware.
@@ -25,7 +26,8 @@ type TimeoutConfig struct {
 	Message interface{}
 
 	// ErrorHandler is a custom function to handle the timeout event.
-	// It receives the `xylium.Context` and the timeout error (typically `context.DeadlineExceeded`).
+	// It receives the `xylium.Context` (konteks asli, bukan yang di-timeout)
+	// and the timeout error (typically `context.DeadlineExceeded`).
 	// If nil, a default handler sends an HTTP 503 Service Unavailable response.
 	// The ErrorHandler is responsible for formulating and sending the complete client response.
 	// It should return an error if it fails to handle the timeout, though typically it returns nil
@@ -39,26 +41,18 @@ type TimeoutConfig struct {
 func Timeout(timeout time.Duration) Middleware {
 	return TimeoutWithConfig(TimeoutConfig{
 		Timeout: timeout,
-		// Message and ErrorHandler will use defaults defined within TimeoutWithConfig.
 	})
 }
 
 // TimeoutWithConfig returns a Timeout middleware with the provided custom configuration.
-// It creates a cancellable context with the specified timeout and runs the subsequent
-// handler chain within that context, leveraging the integrated Go context in xylium.Context.
 func TimeoutWithConfig(config TimeoutConfig) Middleware {
-	// Validate mandatory configuration: Timeout duration must be positive.
 	if config.Timeout <= 0 {
 		panic("xylium: Timeout middleware 'Timeout' duration must be greater than 0")
 	}
 
-	// Define the default error handler if no custom ErrorHandler is provided.
-	// This handler is invoked when a request times out.
 	defaultErrorHandler := func(c *Context, err error) error {
-		// `err` here is typically `context.DeadlineExceeded`.
-		logger := c.Logger().WithFields(M{"middleware": "Timeout"})
+		logger := c.Logger().WithFields(M{"middleware": "Timeout", "handler": "defaultErrorHandler"})
 		timeoutDuration := config.Timeout
-
 		var clientErrorMessage string
 		switch msg := config.Message.(type) {
 		case string:
@@ -69,7 +63,7 @@ func TimeoutWithConfig(config TimeoutConfig) Middleware {
 			}
 		case func(c *Context) string:
 			if msg != nil {
-				clientErrorMessage = msg(c)
+				clientErrorMessage = msg(c) // Gunakan context 'c' yang asli
 			} else {
 				clientErrorMessage = fmt.Sprintf("Request processing timed out after %v.", timeoutDuration)
 			}
@@ -77,83 +71,136 @@ func TimeoutWithConfig(config TimeoutConfig) Middleware {
 			clientErrorMessage = fmt.Sprintf("Request processing timed out after %v.", timeoutDuration)
 		}
 
-		logger.Warnf("Request %s %s timed out after %v. Responding with 503 Service Unavailable. Original context error: %v",
-			c.Method(), c.Path(), timeoutDuration, err)
+		// PENTING: Periksa apakah response sudah dikirim SEBELUM mencoba mengirim response error baru.
+		// Gunakan context 'c' yang asli untuk pemeriksaan ResponseCommitted, karena ini merefleksikan
+		// state akhir dari response yang mungkin sudah dikirim oleh handler yang di-timeout.
+		if c.ResponseCommitted() {
+			logger.Warnf(
+				"Request %s %s timed out after %v, but response was already committed by a downstream handler. Cannot send new error response. Original context error: %v",
+				c.Method(), c.Path(), timeoutDuration, err,
+			)
+			// Kembalikan error asli (timeoutError) agar bisa dicatat oleh error handler global Xylium,
+			// tapi response ke klien tidak akan berubah.
+			return err
+		}
 
+		logger.Warnf("Request %s %s timed out after %v. Responding with %d. Original context error: %v",
+			c.Method(), c.Path(), timeoutDuration, StatusServiceUnavailable, err)
 		return NewHTTPError(StatusServiceUnavailable, clientErrorMessage).WithInternal(err)
 	}
 
-	// Use the user-provided ErrorHandler if available; otherwise, use the default one.
-	handlerToUse := config.ErrorHandler
-	if handlerToUse == nil {
-		handlerToUse = defaultErrorHandler
+	errorHandlerToUse := config.ErrorHandler
+	if errorHandlerToUse == nil {
+		errorHandlerToUse = defaultErrorHandler
 	}
 
-	// Return the actual middleware handler function.
 	return func(next HandlerFunc) HandlerFunc {
-		return func(c *Context) error {
+		return func(c *Context) error { // 'c' di sini adalah context asli dari router
 			logger := c.Logger().WithFields(M{"middleware": "Timeout"})
 
-			// --- Context Propagation and Timeout Setup ---
-			// Get the current Go context.Context from the Xylium context.
-			// This parentCtx might have been set by previous middleware or initialized in acquireCtx.
-			parentCtx := c.GoContext() // Use the integrated Go context.
-
-			// Create the cancellable Go context with the specified timeout, derived from parentCtx.
+			parentCtx := c.GoContext() // Go context dari 'c'
 			ctxWithTimeout, cancelFunc := context.WithTimeout(parentCtx, config.Timeout)
-			defer cancelFunc() // IMPORTANT: Always call cancelFunc to release resources associated with ctxWithTimeout.
+			defer cancelFunc() // Pastikan cancel selalu dipanggil
 
-			// Create a new Xylium.Context instance (shallow copy) that holds this new ctxWithTimeout.
-			// This ensures that if `next` or any subsequent handler calls `c.GoContext()`,
-			// they will receive the context that includes this timeout.
+			// timedXyliumCtx adalah context Xylium yang membawa Go context yang di-timeout
 			timedXyliumCtx := c.WithGoContext(ctxWithTimeout)
 
-			// --- Asynchronous Handler Execution with Timeout Monitoring ---
-			done := make(chan error, 1)            // Buffered channel for the error (or nil) from `next(c)`.
-			panicChan := make(chan interface{}, 1) // Buffered channel for panics recovered from `next(c)`.
+			resultChan := make(chan error, 1)
+			panicValChan := make(chan interface{}, 1) // Menggunakan nama yang berbeda untuk kejelasan
 
 			go func() {
 				defer func() {
 					if p := recover(); p != nil {
-						panicChan <- p
+						panicValChan <- p // Kirim panic jika ada
+						// Tidak perlu close panicValChan di sini jika panic, biarkan select utama yang menghabiskan
+						return // Keluar setelah mengirim panic
 					}
+					// Jika tidak ada panic, tutup panicValChan untuk menandakan tidak ada panic
+					close(panicValChan)
 				}()
-				// Execute `next(timedXyliumCtx)`: pass the Xylium context that has the timed Go context.
-				done <- next(timedXyliumCtx)
+				// Jalankan handler next dengan timedXyliumCtx
+				resultChan <- next(timedXyliumCtx)
+				// Tutup resultChan setelah mengirimkan hasil (error atau nil)
+				close(resultChan)
 			}()
 
-			// Wait for one of three outcomes:
 			select {
-			case errFromHandler := <-done:
-				// Handler completed normally (or with an error from downstream).
-				return errFromHandler
+			case errFromHandler, resultChanOk := <-resultChan:
+				// Handler selesai atau resultChan ditutup.
+				// `resultChanOk` adalah false jika channel ditutup.
 
-			case panicVal := <-panicChan:
-				// Handler panicked. Re-panic so Xylium's central panic handler can catch it.
-				// Log using the method/path from timedXyliumCtx for context.
-				logger.Errorf("Panic recovered from downstream handler for %s %s. Re-panicking. Panic: %v",
-					timedXyliumCtx.Method(), timedXyliumCtx.Path(), panicVal)
-				panic(panicVal)
+				// Periksa dulu apakah ada panic yang mungkin terjadi.
+				// Ini dibaca dari panicValChan.
+				pVal, panicChanOk := <-panicValChan
+				if panicChanOk && pVal != nil { // Ada panic yang tertangkap dan channel belum ditutup
+					logger.Errorf("Panic (handler finished/errored then panic detected): %v for %s %s. Re-panicking.",
+						pVal, timedXyliumCtx.Method(), timedXyliumCtx.Path())
+					panic(pVal)
+				}
+				// Jika panicChanOk false, berarti channel sudah ditutup (tidak ada panic).
 
-			case <-ctxWithTimeout.Done(): // This is the Go context's Done channel.
-				// Timeout occurred. ctxWithTimeout.Err() will be context.DeadlineExceeded.
-				timeoutError := ctxWithTimeout.Err()
-
-				// Check if the response has already been sent by the (now timed-out) handler.
-				// Use timedXyliumCtx for this check, as it reflects the state during the handler's execution.
-				if timedXyliumCtx.ResponseCommitted() {
-					logger.Warnf(
-						"Request %s %s timed out after %v, but response was already committed. Cannot send timeout response. Original context error: %v",
-						timedXyliumCtx.Method(), timedXyliumCtx.Path(), config.Timeout, timeoutError,
-					)
-					return timeoutError // Return the context error; response already sent.
+				// Jika kita sampai di sini, tidak ada panic yang diprioritaskan.
+				// Sekarang, periksa apakah timeout dari middleware juga terjadi
+				// (penting jika handler selesai TEPAT saat timeout).
+				select {
+				case <-ctxWithTimeout.Done(): // Timeout menang!
+					timeoutError := ctxWithTimeout.Err()
+					// PENTING: Saat memanggil ErrorHandler, kita gunakan 'c' (context asli)
+					// agar ErrorHandler bisa menggunakan c.ResponseCommitted() yang merefleksikan
+					// state response dari handler 'next' yang berjalan dengan 'timedXyliumCtx'.
+					// Namun, untuk kejelasan, errorHandlerToUse sudah memeriksa c.ResponseCommitted().
+					return errorHandlerToUse(c, timeoutError)
+				default:
+					// Timeout belum terjadi (atau belum terdeteksi di sini).
+					// Kembalikan hasil dari handler.
+					if !resultChanOk && errFromHandler == nil { // Channel resultChan ditutup dan tidak ada error.
+						return nil
+					}
+					return errFromHandler // Bisa error dari handler, atau nil.
 				}
 
-				// Response not committed. Invoke the configured timeout error handler.
-				// Pass the original Xylium context `c` to the error handler.
-				// The error handler typically doesn't need the timed Go context; it just needs
-				// to know a timeout occurred (via `timeoutError`) and respond using `c`.
-				return handlerToUse(c, timeoutError)
+			case pVal, panicChanOk := <-panicValChan:
+				// Panic terjadi SEBELUM resultChan memberi sinyal, atau panicChan ditutup.
+				if panicChanOk && pVal != nil { // Ada panic yang tertangkap
+					logger.Errorf("Panic (detected directly via panicChan): %v for %s %s. Re-panicking.",
+						pVal, timedXyliumCtx.Method(), timedXyliumCtx.Path())
+					panic(pVal)
+				}
+				// Jika panicChan ditutup tanpa nilai (ok false), berarti tidak ada panic.
+				// Kita harus menunggu hasil dari resultChan.
+				errFromHandlerAfterEmptyPanic, resultChanStillOk := <-resultChan
+				if !resultChanStillOk && errFromHandlerAfterEmptyPanic == nil { // resultChan juga ditutup & nil.
+					return nil
+				}
+				// Jika sampai sini, berarti panicChan ditutup (tidak ada panic), dan resultChan memberi hasil.
+				// Cek timeout lagi untuk kasus handler selesai bersamaan dengan timeout.
+				select {
+				case <-ctxWithTimeout.Done():
+					timeoutError := ctxWithTimeout.Err()
+					return errorHandlerToUse(c, timeoutError)
+				default:
+					return errFromHandlerAfterEmptyPanic
+				}
+
+			case <-ctxWithTimeout.Done(): // Timeout terpicu SEBELUM handler selesai atau panik.
+				timeoutError := ctxWithTimeout.Err()
+
+				// Beri kesempatan terakhir untuk panicValChan jika ada, karena bisa saja panic
+				// terjadi sangat dekat dengan timeout dan panicValChan belum terbaca.
+				select {
+				case pVal, pOk := <-panicValChan:
+					if pOk && pVal != nil {
+						logger.Errorf("Handler panicked around the time of context timeout (timeout won primary select, panic checked after): %v for %s %s. Prioritizing panic.",
+							pVal, timedXyliumCtx.Method(), timedXyliumCtx.Path())
+						panic(pVal)
+					}
+				default:
+					// Tidak ada panic atau panicValChan belum siap/ditutup.
+				}
+
+				// Panggil ErrorHandler. ErrorHandler (default atau custom)
+				// akan memeriksa c.ResponseCommitted() dari context asli 'c'.
+				return errorHandlerToUse(c, timeoutError)
 			}
 		}
 	}
