@@ -1,3 +1,4 @@
+// File: src/xylium/context_response.go
 package xylium
 
 import (
@@ -21,6 +22,9 @@ import (
 // It uses `c.responseOnce` to ensure this initialization happens at most once per request.
 func (c *Context) SetDefaultContentType() {
 	c.responseOnce.Do(func() {
+		// Hanya set default jika Content-Type belum ada SAMA SEKALI.
+		// fasthttp.ResponseHeader.ContentType() akan mengembalikan nilai default jika kosong,
+		// jadi kita gunakan Peek() untuk melihat nilai mentahnya.
 		if len(c.Ctx.Response.Header.Peek("Content-Type")) == 0 {
 			c.Ctx.Response.Header.SetContentTypeBytes([]byte("text/plain; charset=utf-8"))
 		}
@@ -159,6 +163,8 @@ func (c *Context) File(filepathToServe string) error {
 		return NewHTTPError(StatusForbidden, "Serving directories directly is not allowed via c.File(). Path is a directory.").WithInternal(fmt.Errorf("attempted to serve directory: %s", absPath))
 	}
 
+	// Penting: Jangan panggil SetDefaultContentType() di sini.
+	// Biarkan fasthttp.ServeFile yang menentukan Content-Type berdasarkan ekstensi file.
 	fasthttp.ServeFile(c.Ctx, absPath)
 	return nil
 }
@@ -169,7 +175,10 @@ func (c *Context) File(filepathToServe string) error {
 // - It then calls `c.File(filepathToServe)` to serve the file content.
 // Returns an error if `c.File` returns an error.
 func (c *Context) Attachment(filepathToServe string, downloadFilename string) error {
+	// Set Content-Disposition dulu.
+	// url.PathEscape digunakan untuk memastikan nama file aman untuk header.
 	c.SetHeader("Content-Disposition", `attachment; filename="`+url.PathEscape(downloadFilename)+`"`)
+	// Kemudian panggil c.File. c.File akan menangani Content-Type.
 	return c.File(filepathToServe)
 }
 
@@ -180,8 +189,9 @@ func (c *Context) Attachment(filepathToServe string, downloadFilename string) er
 //
 // Returns nil as `fasthttp.RequestCtx.Redirect` handles sending the response.
 func (c *Context) Redirect(location string, code int) error {
+	// Validasi kode redirect. Jika tidak valid, default ke StatusFound (302).
 	if code < StatusMultipleChoices || code > StatusPermanentRedirect || code == StatusNotModified {
-		code = StatusFound
+		code = StatusFound // fasthttp.StatusFound
 	}
 	c.Ctx.Redirect(location, code)
 	return nil
@@ -203,15 +213,22 @@ func (c *Context) Error(message string, code int) error {
 // `code` should typically be `StatusNoContent` (204) or similar.
 // Returns nil as the response is fully handled.
 func (c *Context) NoContent(code int) error {
-	c.Status(code)
-	c.Ctx.Response.ResetBody()
-	// Meskipun RFC 7231 mengatakan 204 TIDAK BOLEH memiliki Content-Type,
-	// fasthttp.ResponseHeader.ContentType() mungkin mengembalikan default jika tidak ada yang disetel.
-	// Upaya untuk menghapusnya tetap dilakukan.
-	if code == StatusNoContent { // StatusNoContent adalah konstanta xylium untuk 204
+	c.Ctx.SetStatusCode(code)  // Set status code dulu
+	c.Ctx.Response.ResetBody() // Pastikan body kosong
+
+	if code == StatusNoContent { // xylium.StatusNoContent adalah 204
+		// RFC 9110 (HTTP Semantics) Section 15.3.5:
+		// "A 204 response is terminated by the first empty line after the
+		// header fields because it cannot contain a message body."
+		// "A 204 response is not allowed to contain a Content-Type header field."
 		c.Ctx.Response.Header.Del("Content-Type")
-		// Upaya tambahan untuk memastikan CT kosong secara internal di fasthttp jika memungkinkan
-		c.Ctx.Response.Header.SetContentTypeBytes(nil)
+		// Juga hapus Content-Length jika ada (fasthttp mungkin sudah menanganinya dengan ResetBody)
+		c.Ctx.Response.Header.Del("Content-Length")
 	}
+	// Untuk status lain yang mungkin juga tidak memiliki body (misalnya 304),
+	// kita tidak secara agresif menghapus Content-Type jika sudah disetel,
+	// karena mungkin relevan (misalnya, CT dari resource yang tidak dimodifikasi).
+	// fasthttp sendiri akan menangani perilaku default untuk status seperti 304.
+	// Pemanggilan SetDefaultContentType() juga tidak diperlukan di sini karena tidak ada body.
 	return nil
 }

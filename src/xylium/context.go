@@ -1,4 +1,4 @@
-// src/xylium/context.go
+// File: src/xylium/context.go
 package xylium
 
 import (
@@ -130,42 +130,56 @@ func (c *Context) Next() error {
 }
 
 // setRouter associates the router with the context. Internal use by the framework.
-func (c *Context) setRouter(r *Router) {
+func (c *Context) setRouter(r *Router) { // Keep unexported, called internally by router.Handler
 	c.router = r
 }
 
-// ResponseCommitted checks if the response headers have been sent.
+// ResponseCommitted checks if the response headers have been sent or if the response
+// body has started to be written.
 // This is useful for middleware or handlers to determine if they can still
 // modify the response (e.g., set status code, headers, or write body).
 func (c *Context) ResponseCommitted() bool {
 	if c.Ctx == nil {
-		return false // No fasthttp context, so nothing could have been committed.
+		return false
 	}
+
 	// Hijacked connections are considered committed.
 	if c.Ctx.Hijacked() {
 		return true
 	}
+
 	resp := &c.Ctx.Response
 	// StatusSwitchingProtocols implies headers have been sent for protocol upgrade.
 	if resp.StatusCode() == fasthttp.StatusSwitchingProtocols {
 		return true
 	}
-	// If the body is being streamed, headers are already sent.
+
+	// If the body is being streamed, headers are typically sent immediately.
 	if resp.IsBodyStream() {
+		// Untuk body stream, fasthttp mengirim header saat SetBodyStream dipanggil
+		// atau saat pertama kali data ditulis ke stream, tergantung konfigurasinya.
+		// Menganggapnya committed jika IsBodyStream true adalah asumsi yang cukup aman.
 		return true
 	}
-	// If any body content has been written.
-	if len(resp.Body()) > 0 {
+
+	// Check if any body content has actually been written.
+	// Ini adalah indikator paling kuat bahwa response sudah dimulai.
+	// Gunakan metode Body() yang diekspor untuk mendapatkan []byte.
+	if len(resp.Body()) > 0 { // <<< PERBAIKAN DARI resp.BodyBytes() MENJADI resp.Body()
 		return true
 	}
-	// If Content-Length is set (even to 0), headers are considered sent.
-	// A negative Content-Length typically means chunked encoding or stream, where headers are sent first.
-	if resp.Header.ContentLength() >= 0 {
-		return true
-	}
-	// Add explicit check for SetStatusCode, as this often implies commitment or impending commitment.
-	// However, fasthttp itself might not consider just setting status as "committed".
-	// The existing checks are generally sufficient as they look for actual header/body writes.
+
+	// Jika ContentLength secara eksplisit disetel ke nilai non-negatif *dan* itu bukan nilai default 0
+	// yang mungkin disetel fasthttp sebelum body ditulis, ini bisa jadi indikasi.
+	// Namun, ini masih bisa ambigu. Fokus pada body yang sudah ditulis lebih aman.
+	// Untuk sekarang, kita akan mengandalkan `len(resp.Body()) > 0` dan `IsBodyStream()`.
+
+	// Pertimbangkan kasus di mana hanya header yang disetel dan statusnya adalah 204 atau 304.
+	// Dalam kasus ini, tidak ada body yang diharapkan. Apakah ini "committed"?
+	// Dari perspektif "tidak bisa mengubah header lagi", ya.
+	// Namun, `fasthttp` mungkin masih mengizinkan perubahan header jika tidak ada body/stream.
+	// Untuk konsistensi, kita akan tetap pada definisi "body ditulis atau stream dimulai atau hijack".
+
 	return false
 }
 
@@ -260,25 +274,20 @@ func (c *Context) WithGoContext(goCtx context.Context) *Context {
 	// and proper initialization of fields like responseOnce.
 	newC := &Context{
 		// Fields to shallow copy or share:
-		Ctx:       c.Ctx,       // Share the fasthttp.RequestCtx pointer.
-		Params:    c.Params,    // Share the map (reference type).
-		handlers:  c.handlers,  // Share the slice header (underlying array shared).
-		index:     c.index,     // Copy the integer value.
-		store:     c.store,     // Share the map (reference type).
-		mu:        c.mu,        // Share the pointer to RWMutex.
-		router:    c.router,    // Share the Router pointer.
-		queryArgs: c.queryArgs, // Share pointer if already parsed.
-		formArgs:  c.formArgs,  // Share pointer if already parsed.
+		Ctx:       c.Ctx,
+		Params:    c.Params,
+		handlers:  c.handlers,
+		index:     c.index,
+		store:     c.store,
+		mu:        c.mu,
+		router:    c.router,
+		queryArgs: c.queryArgs,
+		formArgs:  c.formArgs,
 
 		// Fields to initialize as new/independent for newC:
-		responseOnce: sync.Once{}, // A new sync.Once instance for the new context.
-		goCtx:        goCtx,       // Set the new Go context.
+		responseOnce: sync.Once{},
+		goCtx:        goCtx,
 	}
-	// Note: If c.Params, c.handlers, c.store, c.queryArgs, c.formArgs were nil in 'c',
-	// they will also be nil in 'newC' after this shallow copy, which is generally fine
-	// as they are typically initialized on demand or by the router.
-	// The pool initialization should ensure `store` and `mu` are non-nil.
-
 	return newC
 }
 
@@ -289,12 +298,6 @@ func (c *Context) WithGoContext(goCtx context.Context) *Context {
 // set globally on the router instance.
 func (c *Context) AppGet(key string) (interface{}, bool) {
 	if c.router == nil {
-		// This might happen if the context is used without being fully processed by the router,
-		// e.g., in some testing scenarios or if a middleware prematurely ends the request
-		// before the router is fully associated.
-		// Using c.Logger() here might be problematic if it also depends on c.router.
-		// Consider a more direct log or simply returning false.
-		// For now, let's assume c.Logger() handles router being nil gracefully.
 		if logger := c.Logger(); logger != nil { // Defensive check on logger
 			logger.Warnf("AppGet: Attempted to get key '%s' from app store, but context's router is nil.", key)
 		}
