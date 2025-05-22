@@ -21,7 +21,6 @@ Middleware in Xylium are functions that can process an HTTP request before it re
     *   [6.6. BasicAuth (`xylium.BasicAuth()`)](#66-basicauth-xyliumbasicauth)
     *   [6.7. Rate Limiter (`xylium.RateLimiter()`)](#67-rate-limiter-xyliumratelimiter)
     *   [6.8. Timeout (`xylium.Timeout()`)](#68-timeout-xyliumtimeout)
-    *   [6.9. OpenTelemetry (`xylium.Otel()`)](#69-opentelemetry-xyliumotel)
 
 ---
 
@@ -369,31 +368,5 @@ While there isn't a distinct `xylium.LoggerMiddleware()`, the logging behavior i
     ```
 *   Handlers should respect `c.GoContext().Done()` if performing long operations.
 *   See `middleware_timeout.go` for `TimeoutConfig` details.
-
-### 6.9. OpenTelemetry (`xylium.Otel()`)
-
-*   **Purpose**: Integrates with OpenTelemetry for distributed tracing.
-*   **Behavior**:
-    *   Extracts trace context from incoming headers.
-    *   Starts a new server span for each request.
-    *   Records standard HTTP semantic attributes.
-    *   Injects `trace_id` and `span_id` into `xylium.Context` (keys `ContextKeyOtelTraceID`, `ContextKeyOtelSpanID`) for `c.Logger()`.
-    *   Propagates the traced Go `context.Context` via `c.WithGoContext()`.
-*   **Prerequisites**: Your application must initialize the OpenTelemetry SDK (TracerProvider, Exporter, global Propagator).
-*   **Usage**:
-    ```go
-    // After OTel SDK initialization in main()
-    app.Use(xylium.Otel()) // Uses global OTel provider/propagator
-
-    // With custom configuration
-    // app.Use(xylium.Otel(xylium.OpenTelemetryConfig{
-    //  TracerName: "my-service-tracer",
-    //  SpanNameFormatter: func(c *xylium.Context) string {
-    //      return c.Method() + " " + c.MatchedRoutePattern() // Ideal if MatchedRoutePattern is available
-    //  },
-    //  Filter: func(c *xylium.Context) bool { return c.Path() == "/health" }, // Skip tracing health checks
-    // }))
-    ```
-*   Refer to **`OpenTelemetry.md`** for detailed setup and usage.
 
 By leveraging Xylium's middleware system and its built-in components, you can build robust, secure, and observable web applications efficiently.
