@@ -123,7 +123,7 @@ Explore the full potential of Xylium Core through our detailed documentation:
 *   **Server Basics:** `Docs/ServerBasics.md`
 *   **Routing:** `Docs/Routing.md`
 *   **Request Handling:** `Docs/RequestHandling.md`
-*   **Response Handling:** `Docs/ResponseHanding.md` (*Note: consider renaming to `ResponseHandling.md` for consistency*)
+*   **Response Handling:** `Docs/ResponseHandling.md`
 *   **Data Binding & Validation:** `Docs/ContextBinding.md`
 *   **Middleware:** `Docs/Middleware.md`
 *   **Logging:** `Docs/Logging.md`
