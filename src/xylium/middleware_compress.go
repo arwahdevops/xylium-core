@@ -1,151 +1,171 @@
-// File: src/xylium/middleware_compress.go
+// src/xylium/middleware_compress.go
+
 package xylium
 
 import (
-	"strconv" // For converting Content-Length int to string.
-	"strings" // For string manipulation (content type parsing).
+	"strconv" // Untuk mengonversi Content-Length int ke string.
+	"strings" // Untuk manipulasi string (parsing tipe konten).
 
-	"github.com/valyala/fasthttp" // For fasthttp constants and Gzip compression.
+	"github.com/valyala/fasthttp" // Digunakan secara internal untuk operasi kompresi dan konstanta HTTP.
 )
 
-// GzipConfig defines the configuration for the Gzip compression middleware.
-// This middleware compresses response bodies to reduce transfer size, which can
-// improve performance for clients with limited bandwidth.
+// GzipConfig mendefinisikan opsi konfigurasi untuk middleware Gzip.
+// Middleware ini mengompresi body respons HTTP menggunakan Gzip untuk
+// mengurangi ukuran transfer, yang dapat meningkatkan kinerja untuk klien
+// dengan bandwidth terbatas atau untuk respons besar.
 type GzipConfig struct {
-	// Level is the Gzip compression level to use.
-	// Higher levels offer better compression ratios but consume more CPU.
-	// Options are defined in `github.com/valyala/fasthttp`:
-	//  - `fasthttp.CompressNoCompression` (0)
-	//  - `fasthttp.CompressBestSpeed` (1)
-	//  - `fasthttp.CompressBestCompression` (9)
-	//  - `fasthttp.CompressDefaultCompression` (-1, typically equivalent to level 6)
-	//  - `fasthttp.CompressHuffmanOnly` (-2)
-	// Default: `fasthttp.CompressDefaultCompression` if not specified or set to 0 (as 0 means NoCompression).
-	Level int
+	// Level adalah tingkat kompresi Gzip yang akan digunakan.
+	// Tingkat yang lebih tinggi menawarkan rasio kompresi yang lebih baik tetapi mengonsumsi lebih banyak CPU.
+	// Gunakan konstanta xylium.Compress* (misalnya, xylium.CompressDefaultCompression).
+	//
+	// Default: xylium.CompressDefaultCompression jika tidak ditentukan, atau jika diatur ke
+	// xylium.CompressNoCompression (nilai 0). Jika Anda benar-benar ingin menonaktifkan
+	// kompresi, jangan gunakan middleware Gzip sama sekali atau gunakan logika Skip.
+	Level CompressionLevel
 
-	// MinLength is the minimum response body length (in bytes) required to trigger compression.
-	// Responses smaller than this will not be compressed, as the overhead of compression
-	// might outweigh the benefits for very small payloads.
-	// Default: 0 (compress all eligible responses regardless of size, if not specified).
-	// A common practical value might be 1024 bytes (1KB).
+	// MinLength adalah panjang body respons minimum (dalam byte) yang diperlukan
+	// untuk memicu kompresi. Respons yang lebih kecil dari ini tidak akan dikompresi,
+	// karena overhead kompresi mungkin lebih besar daripada manfaatnya untuk payload kecil.
+	//
+	// Default: 0 (kompres semua respons yang memenuhi syarat terlepas dari ukurannya, jika tidak ditentukan).
+	// Nilai praktis yang umum adalah 1024 byte (1KB).
 	MinLength int
 
-	// ContentTypes is a list of MIME types that should be considered for compression.
-	// If this list is empty, a default list of common compressible types will be used
-	// (see `defaultCompressContentTypes`).
-	// Comparison is case-insensitive and considers the base MIME type (e.g., "text/html"
-	// from "text/html; charset=utf-8").
-	// Example: `[]string{"application/json", "text/html; charset=utf-8"}`
+	// ContentTypes adalah daftar tipe MIME yang harus dipertimbangkan untuk kompresi.
+	// Jika daftar ini kosong, daftar default tipe yang umum dapat dikompresi akan digunakan
+	// (lihat `defaultCompressContentTypes`).
+	// Perbandingan tidak case-sensitive dan mempertimbangkan tipe MIME dasar
+	// (misalnya, "text/html" dari "text/html; charset=utf-8").
+	//
+	// Contoh: `[]string{"application/json", "text/html; charset=utf-8"}`
 	ContentTypes []string
 }
 
-// defaultCompressContentTypes is a list of common MIME types that are typically
-// good candidates for Gzip compression. Text-based formats like HTML, CSS, JS, JSON,
-// and XML benefit significantly from compression.
+// defaultCompressContentTypes adalah daftar tipe MIME umum yang biasanya
+// merupakan kandidat baik untuk kompresi Gzip. Format berbasis teks seperti HTML, CSS, JS, JSON,
+// dan XML mendapat manfaat signifikan dari kompresi.
 var defaultCompressContentTypes = []string{
 	"text/plain", "text/html", "text/css", "text/xml", "text/javascript",
 	"application/json", "application/xml", "application/javascript", "application/x-javascript",
 	"application/rss+xml", "application/atom+xml", "image/svg+xml",
 }
 
-// Gzip returns a Gzip compression middleware with default configuration.
-// It uses GzipConfig{} which will then be populated with defaults by GzipWithConfig.
+// Gzip mengembalikan middleware kompresi Gzip dengan konfigurasi default.
+// Untuk kustomisasi, gunakan GzipWithConfig.
+//
+// Middleware ini akan:
+//  1. Memeriksa header "Accept-Encoding" klien untuk dukungan "gzip".
+//  2. Memeriksa apakah respons memenuhi syarat untuk kompresi (tipe konten, ukuran).
+//  3. Mengompres body respons.
+//  4. Menyetel header "Content-Encoding: gzip" dan "Vary: Accept-Encoding".
+//  5. Memperbarui header "Content-Length" dengan ukuran body yang terkompresi.
 func Gzip() Middleware {
-	return GzipWithConfig(GzipConfig{}) // Pass empty struct to use defaults in GzipWithConfig
+	return GzipWithConfig(GzipConfig{}) // Melewatkan struct kosong untuk menggunakan default di GzipWithConfig
 }
 
-// GzipWithConfig returns a Gzip compression middleware with the provided custom configuration.
-// It handles checking client capabilities, response eligibility, performing compression,
-// and setting appropriate response headers.
+// GzipWithConfig mengembalikan middleware kompresi Gzip dengan konfigurasi kustom yang disediakan.
+// Lihat GzipConfig untuk detail opsi yang tersedia.
 func GzipWithConfig(config GzipConfig) Middleware {
-	// Apply default compression level if not specified or if set to NoCompression (0)
-	// by the user but they intended to use defaults.
-	if config.Level == fasthttp.CompressNoCompression {
-		config.Level = fasthttp.CompressDefaultCompression
+	// Terapkan level kompresi default jika tidak ditentukan atau jika disetel ke NoCompression (0).
+	// Jika pengguna benar-benar tidak ingin kompresi, mereka seharusnya tidak menggunakan middleware ini.
+	if config.Level == CompressNoCompression {
+		config.Level = CompressDefaultCompression
 	}
-	// Note: MinLength defaults to 0 (compress all sizes) if not set, which is acceptable.
+	// Catatan: MinLength default ke 0 (kompres semua ukuran) jika tidak diset, yang dapat diterima.
 
+	// Siapkan peta tipe konten yang dapat dikompresi untuk pencarian cepat.
 	compressibleTypes := make(map[string]struct{})
 	typesToUse := config.ContentTypes
 	if len(typesToUse) == 0 {
-		typesToUse = defaultCompressContentTypes
+		typesToUse = defaultCompressContentTypes // Gunakan default jika tidak ada yang disediakan.
 	}
 	for _, t := range typesToUse {
+		// Normalisasi tipe: lowercase, hapus spasi, dan ambil hanya bagian utama (sebelum ';').
 		normalizedType := strings.ToLower(strings.TrimSpace(strings.Split(t, ";")[0]))
 		if normalizedType != "" {
 			compressibleTypes[normalizedType] = struct{}{}
 		}
 	}
 
+	// Fungsi middleware yang sebenarnya.
 	return func(next HandlerFunc) HandlerFunc {
 		return func(c *Context) error {
+			// Dapatkan logger yang sudah request-scoped dari context Xylium.
+			// Middleware ini menambahkan field "middleware": "Gzip" untuk konteks logging tambahan.
 			logger := c.Logger().WithFields(M{"middleware": "Gzip"})
 
+			// 1. Periksa apakah klien mendukung encoding gzip.
 			acceptEncoding := c.Header("Accept-Encoding")
 			if !strings.Contains(acceptEncoding, "gzip") {
-				logger.Debugf("Client does not accept gzip encoding ('%s'). Skipping compression for %s %s.",
+				logger.Debugf("Klien tidak menerima encoding gzip ('%s'). Melewati kompresi untuk %s %s.",
 					acceptEncoding, c.Method(), c.Path())
-				return next(c)
+				return next(c) // Lanjutkan ke handler berikutnya tanpa kompresi.
 			}
 
-			err := next(c) // Call next handler first to get the response prepared
+			// 2. Panggil handler berikutnya dalam chain untuk menyiapkan respons.
+			err := next(c)
 			if err != nil {
-				logger.Debugf("Error occurred in handler chain. Skipping compression for %s %s.", c.Method(), c.Path())
+				// Jika ada error dari handler/middleware berikutnya, jangan lakukan kompresi.
+				// Biarkan GlobalErrorHandler yang menangani error ini.
+				logger.Debugf("Error terjadi dalam chain handler. Melewati kompresi untuk %s %s.", c.Method(), c.Path())
 				return err
 			}
 
-			// Kondisi untuk skip kompresi setelah handler dijalankan:
-			// (Cek ResponseCommitted() DIHAPUS dari sini karena Gzip ingin memodifikasi body yang sudah diset handler)
-
+			// 3. Periksa kondisi untuk melewati kompresi setelah handler dijalankan.
+			// Kode status respons: Jangan kompres error (>=400).
 			if c.Ctx.Response.StatusCode() >= StatusBadRequest {
-				logger.Debugf("Response status code %d is >= 400. Skipping compression for %s %s.",
+				logger.Debugf("Kode status respons %d adalah >= 400. Melewati kompresi untuk %s %s.",
 					c.Ctx.Response.StatusCode(), c.Method(), c.Path())
-				return nil // Jangan return error, biarkan response error asli yang dikirim
+				return nil // Tidak ada error dari middleware Gzip, biarkan respons error asli dikirim.
 			}
+			// Content-Encoding sudah disetel: Mungkin sudah dikompresi oleh handler lain.
 			if len(c.Ctx.Response.Header.Peek("Content-Encoding")) > 0 {
-				logger.Debugf("'Content-Encoding' header already set to '%s'. Skipping compression for %s %s.",
+				logger.Debugf("Header 'Content-Encoding' sudah disetel ke '%s'. Melewati kompresi untuk %s %s.",
 					string(c.Ctx.Response.Header.Peek("Content-Encoding")), c.Method(), c.Path())
 				return nil
 			}
 
+			// Ambil body respons yang telah disiapkan oleh handler.
 			responseBody := c.Ctx.Response.Body()
+			// Body kosong: Tidak ada yang perlu dikompresi.
 			if len(responseBody) == 0 {
-				logger.Debugf("Response body is empty. Skipping compression for %s %s.", c.Method(), c.Path())
+				logger.Debugf("Body respons kosong. Melewati kompresi untuk %s %s.", c.Method(), c.Path())
 				return nil
 			}
 
+			// Ukuran minimum: Jika body lebih kecil dari MinLength yang dikonfigurasi.
 			if config.MinLength > 0 && len(responseBody) < config.MinLength {
-				logger.Debugf("Response body length %d bytes is less than MinLength %d bytes. Skipping compression for %s %s.",
+				logger.Debugf("Panjang body respons %d byte kurang dari MinLength %d byte. Melewati kompresi untuk %s %s.",
 					len(responseBody), config.MinLength, c.Method(), c.Path())
 				return nil
 			}
 
+			// Tipe konten: Periksa apakah tipe konten respons ada dalam daftar yang dapat dikompresi.
 			contentType := string(c.Ctx.Response.Header.ContentType())
 			normalizedContentType := strings.ToLower(strings.Split(contentType, ";")[0])
 			if _, typeIsCompressible := compressibleTypes[normalizedContentType]; !typeIsCompressible {
-				logger.Debugf("Content-Type '%s' (normalized: '%s') is not in the compressible types list. Skipping compression for %s %s.",
+				logger.Debugf("Content-Type '%s' (dinormalisasi: '%s') tidak ada dalam daftar tipe yang dapat dikompresi. Melewati kompresi untuk %s %s.",
 					contentType, normalizedContentType, c.Method(), c.Path())
 				return nil
 			}
 
-			// Lakukan kompresi
-			logger.Debugf("Compressing response for %s %s (Content-Type: %s, Original Size: %d bytes, Level: %d).",
+			// 4. Lakukan kompresi Gzip.
+			logger.Debugf("Mengompresi respons untuk %s %s (Content-Type: %s, Ukuran Asli: %d byte, Level: %d).",
 				c.Method(), c.Path(), contentType, len(responseBody), config.Level)
 
-			compressedBody := fasthttp.AppendGzipBytesLevel(nil, responseBody, config.Level)
+			// Gunakan AppendGzipBytesLevel dari fasthttp. Cast config.Level ke int.
+			compressedBody := fasthttp.AppendGzipBytesLevel(nil, responseBody, int(config.Level))
 
-			// Set body dan header baru
-			c.Ctx.Response.SetBodyRaw(compressedBody)
-			c.SetHeader("Content-Encoding", "gzip")
-			// Content-Length harus diupdate ke ukuran body yang terkompresi
-			c.SetHeader("Content-Length", strconv.Itoa(len(compressedBody)))
-			// Tambahkan Vary header
-			c.Ctx.Response.Header.Add("Vary", "Accept-Encoding")
+			// 5. Setel body dan header respons yang baru.
+			c.Ctx.Response.SetBodyRaw(compressedBody)                        // Setel body yang sudah dikompresi.
+			c.SetHeader("Content-Encoding", "gzip")                          // Tambahkan header Content-Encoding.
+			c.SetHeader("Content-Length", strconv.Itoa(len(compressedBody))) // Update Content-Length.
+			c.Ctx.Response.Header.Add("Vary", "Accept-Encoding")             // Tambahkan header Vary. Penting untuk caching.
 
-			logger.Debugf("Compression successful for %s %s. New size: %d bytes.",
+			logger.Debugf("Kompresi berhasil untuk %s %s. Ukuran baru: %d byte.",
 				c.Method(), c.Path(), len(compressedBody))
 
-			return nil // Sukses, tidak ada error dari middleware Gzip itu sendiri
+			return nil // Sukses, tidak ada error dari middleware Gzip itu sendiri.
 		}
 	}
 }
