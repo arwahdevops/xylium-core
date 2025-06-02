@@ -1,6 +1,6 @@
 # Xylium Data Binding: From Request to Structs
 
-Xylium provides powerful and flexible mechanisms for binding incoming request data (JSON, XML, form data, query parameters) to Go structs. This process often includes validation to ensure data integrity. Xylium offers two primary ways to achieve this: general-purpose binding using `c.Bind()` and `c.BindAndValidate()`, and specialized type-safe parameter binding for URL path and query parameters (see `TypeSafeParams.md`).
+Xylium provides powerful and flexible mechanisms for binding incoming request data (JSON, XML, form data, query parameters) to Go structs. This process often includes validation to ensure data integrity. Xylium offers two primary ways to achieve this: general-purpose binding using `c.Bind()` and `c.BindAndValidate()`, and individual, type-aware access to URL path and query parameters (e.g., `c.ParamInt()`, `c.QueryParamInt()`, detailed in `RequestHandling.md`).
 
 ## Table of Contents
 
@@ -236,7 +236,7 @@ type SearchFilters struct {
 If a specific tag (like `query` or `form`) is missing for a field, Xylium's reflection binder will use the **field's name** (case-sensitive) as the default key to look for in the request data for that source. If a tag is `"-"`, the field is skipped during binding from that source.
 
 ### Note on `default` tag
-The `default:"value"` tag for specifying default values is **not supported** by the general-purpose `c.Bind()` or `c.BindAndValidate()` methods. This tag is specifically used by Xylium's [Type-Safe URL Parameter Binding](#9-type-safe-url-parameter-binding-alternative-approach) mechanism (see `TypeSafeParams.md`).
+The `default:"value"` tag for specifying default values is **not supported** by Xylium's general-purpose `c.Bind()` or `c.BindAndValidate()` methods. Default values should be handled by initializing the struct before binding or by application logic after binding.
 
 ## 6. Validation
 
@@ -261,7 +261,7 @@ When `c.BindAndValidate()` encounters validation errors, it returns a `*xylium.H
 *   Status Code: `400 Bad Request`
 *   Message: A `xylium.M` (map) containing:
     *   `"message": "Validation failed."`
-    *   `"details": map[string]string` where keys are field names (or namespaces for nested structs) and values are specific validation error messages (e.g., `"Username": "validation failed on tag 'required'"`).
+    *   `"details": map[string]string` where keys are field names (or namespaces for nested structs, e.g., `Nested.InnerField`) and values are specific validation error messages (e.g., `"Username": "validation failed on tag 'required'"`).
 
 **Example JSON Error Response for Validation Failure:**
 ```json
@@ -271,7 +271,8 @@ When `c.BindAndValidate()` encounters validation errors, it returns a `*xylium.H
         "message": "Validation failed.",
         "details": {
             "Username": "validation failed on tag 'required'",
-            "Email": "validation failed on tag 'email'"
+            "Email": "validation failed on tag 'email'",
+            "Nested.InnerField": "validation failed on tag 'min'" 
         }
     }
 }
@@ -300,7 +301,7 @@ func main() {
 	customValidator := validator.New()
 	// Register custom validation functions if needed
 	_ = customValidator.RegisterValidation("must_be_xylium_rocks", myCustomValidationFunc)
-	
+
 	xylium.SetCustomValidator(customValidator) // Must be called before app initialization
 
 	app := xylium.New()
@@ -374,4 +375,4 @@ Refer to [Section 3.1](#31-custom-binding-with-xbind-interface-high-performancec
 
 ---
 
-By understanding these binding mechanisms, you can efficiently and safely process incoming request data in your Xylium applications. Choose the method (`c.BindAndValidate`, `XBind`, or type-safe URL parameter binding) that best suits your needs for clarity, performance, and control.
+By understanding these binding mechanisms, you can efficiently and safely process incoming request data in your Xylium applications. Choose the method (`c.BindAndValidate`, `XBind`, or individual parameter access) that best suits your needs for clarity, performance, and control.

@@ -14,10 +14,10 @@ Xylium uses an efficient radix tree-based router to map incoming HTTP requests t
     *   [4.2. Nested Groups](#42-nested-groups)
     *   [4.3. Group Middleware](#43-group-middleware)
 *   [5. Serving Static Files](#5-serving-static-files)
-    *   [5.1. Serving a Directory](#51-serving-a-directory)
-    *   [5.2. Serving a Single Static File](#52-serving-a-single-static-file)
-*   [6. Custom Not Found (404) Handler](#6-custom-not-found-404-handler)
-*   [7. Custom Method Not Allowed (405) Handler](#7-custom-method-not-allowed-405-handler)
+    *   [5.1. Serving a Directory (`app.ServeFiles()`)](#51-serving-a-directory-appservefiles)
+    *   [5.2. Serving a Single Static File (`c.File()`)](#52-serving-a-single-static-file-cfile)
+*   [6. Custom Not Found (404) Handler (`Router.NotFoundHandler`)](#6-custom-not-found-404-handler-routernotfoundhandler)
+*   [7. Custom Method Not Allowed (405) Handler (`Router.MethodNotAllowedHandler`)](#7-custom-method-not-allowed-405-handler-routermethodnotallowedhandler)
 *   [8. Route Matching Order](#8-route-matching-order)
 *   [9. Printing Registered Routes](#9-printing-registered-routes)
 
@@ -73,14 +73,15 @@ func main() {
 	// HEAD request
 	app.HEAD("/status", func(c *xylium.Context) error {
 		// Typically, set headers and no body for HEAD requests.
-		// Xylium handles not sending a body if Content-Length is 0 or not set.
+		// Xylium handles not sending a body if Content-Length is 0 or not set,
+		// or if a "no content" status is used.
 		c.SetHeader("X-App-Status", "healthy")
 		return c.NoContent(http.StatusOK) // Or c.Status(http.StatusOK).String("")
 	})
 
 	// OPTIONS request
 	app.OPTIONS("/resource", func(c *xylium.Context) error {
-		c.SetHeader("Allow", "GET, POST, OPTIONS")
+		c.SetHeader("Allow", "GET, POST, OPTIONS") // Example: Indicate allowed methods
 		return c.NoContent(http.StatusNoContent)
 	})
 
@@ -129,7 +130,7 @@ func GetOrderHandler(c *xylium.Context) error {
 	})
 }
 ```
-Xylium also provides helpers like `c.ParamInt(name string) (int, error)` and `c.ParamIntDefault(name string, def int) int` for convenient type conversion. See `ContextBinding.md` or `RequestHandling.md` for more details.
+Xylium also provides helpers like `c.ParamInt(name string) (int, error)` and `c.ParamIntDefault(name string, def int) int` for convenient type conversion. See `RequestHandling.md` for more details.
 
 ## 3. Catch-All Routes
 
@@ -211,7 +212,7 @@ Route-specific middleware can also be added to routes within a group, and they w
 
 ## 5. Serving Static Files
 
-### 5.1. Serving a Directory
+### 5.1. Serving a Directory (`app.ServeFiles()`)
 
 Xylium provides `app.ServeFiles(urlPathPrefix string, fileSystemRoot string)` to serve static files from a directory.
 
@@ -221,59 +222,59 @@ Xylium provides `app.ServeFiles(urlPathPrefix string, fileSystemRoot string)` to
 app.ServeFiles("/static", "./public_assets")
 
 // To serve from the root URL path:
-// app.ServeFiles("/", "./public_html") // Caution: Ensure no route conflicts
+// app.ServeFiles("/", "./public_html") // Caution: Ensure no route conflicts with other handlers.
 ```
 `ServeFiles` uses `fasthttp.FS` internally, which handles:
-*   Serving `index.html` by default if a directory is requested.
+*   Serving `index.html` by default if a directory is requested (configurable via `fasthttp.FS.IndexNames`).
 *   Setting appropriate `Content-Type` headers based on file extension.
-*   Byte range requests.
+*   Byte range requests (`Accept-Ranges` header).
 *   Compression (if `fasthttp.FS.Compress` is enabled, which it is by default in Xylium's `ServeFiles` usage).
-*   Path not found handling (returns a JSON 404 error by default).
+*   A custom `PathNotFound` handler that returns a JSON 404 error if a file is not found within the `fileSystemRoot`. This ensures API-like error responses even for static assets.
 
-See `router.go` (`Router.ServeFiles`) for implementation details of the path not found handler.
+Refer to `router.go` (`Router.ServeFiles` implementation) for details on the custom `PathNotFound` handler.
 
-### 5.2. Serving a Single Static File
+### 5.2. Serving a Single Static File (`c.File()`)
 
-To serve a single specific file, like a `favicon.ico` or `robots.txt`, you can define a regular route and use `c.File(filepathToServe string)`.
+To serve a single specific file, like a `favicon.ico` or `robots.txt`, you can define a regular route and use `c.File(filepathToServe string)` from `ResponseHandling.md`.
 
 ```go
 // Serve favicon.ico from the root
 app.GET("/favicon.ico", func(c *xylium.Context) error {
-	return c.File("./static/favicon.ico") // Path to your favicon file
+	return c.File("./static_files/favicon.ico") // Path to your favicon file
 })
 
 app.GET("/robots.txt", func(c *xylium.Context) error {
-	return c.File("./static/robots.txt")
+	return c.File("./static_files/robots.txt")
 })
 ```
-`c.File()` also uses `fasthttp.ServeFile` for efficient serving.
+`c.File()` also uses `fasthttp.ServeFile` for efficient serving and proper header management.
 
-## 6. Custom Not Found (404) Handler
+## 6. Custom Not Found (404) Handler (`Router.NotFoundHandler`)
 
-When no route matches the requested path, Xylium invokes the `Router.NotFoundHandler`. You can replace the default 404 handler.
+When no route matches the requested path, Xylium invokes the `Router.NotFoundHandler`. You can replace the default 404 handler to provide custom responses.
 
 ```go
 app.NotFoundHandler = func(c *xylium.Context) error {
-	c.Logger().Warnf("Custom 404: Path '%s' not found.", c.Path())
+	c.Logger().Warnf("Custom 404: Path '%s' not found by client '%s'.", c.Path(), c.RealIP())
 	// You can render an HTML 404 page or return a custom JSON response
 	return c.Status(http.StatusNotFound).JSON(xylium.M{
 		"error_code": "RESOURCE_NOT_FOUND",
-		"message":    "The page you are looking for does not exist.",
+		"message":    "The page or resource you are looking for does not exist.",
 		"path":       c.Path(),
 	})
 }
 ```
-This handler should be set on the `app` instance *before* starting the server. See `ErrorHandling.md` for more on the default handler.
+This handler should be set on the `app` instance *before* starting the server. The `defaultNotFoundHandler` (see `router_defaults.go`) returns a `*xylium.HTTPError` which is then processed by the `GlobalErrorHandler`. Your custom handler should also typically return an error (often `*xylium.HTTPError`) or send a complete response.
 
-## 7. Custom Method Not Allowed (405) Handler
+## 7. Custom Method Not Allowed (405) Handler (`Router.MethodNotAllowedHandler`)
 
-If a route path exists but not for the HTTP method used in the request, Xylium invokes `Router.MethodNotAllowedHandler`. The `Allow` header, listing permitted methods, is automatically set by the router before calling this handler.
+If a route path exists but not for the HTTP method used in the request, Xylium invokes `Router.MethodNotAllowedHandler`. The `Allow` header, listing permitted methods for the path, is automatically set by the router before calling this handler.
 
 ```go
 app.MethodNotAllowedHandler = func(c *xylium.Context) error {
 	allowedMethods := c.Header("Allow") // Router sets this based on tree.Find results
-	c.Logger().Warnf("Custom 405: Method '%s' not allowed for path '%s'. Allowed: [%s]",
-		c.Method(), c.Path(), allowedMethods)
+	c.Logger().Warnf("Custom 405: Method '%s' not allowed for path '%s'. Allowed: [%s]. Client: '%s'",
+		c.Method(), c.Path(), allowedMethods, c.RealIP())
 
 	return c.Status(http.StatusMethodNotAllowed).JSON(xylium.M{
 		"error_code":     "METHOD_NOT_SUPPORTED",
@@ -283,7 +284,7 @@ app.MethodNotAllowedHandler = func(c *xylium.Context) error {
 	})
 }
 ```
-See `ErrorHandling.md` for more on the default handler.
+Like `NotFoundHandler`, this should be set on the `app` instance. The `defaultMethodNotAllowedHandler` also returns a `*xylium.HTTPError`.
 
 ## 8. Route Matching Order
 
@@ -292,18 +293,16 @@ Xylium's radix tree router matches routes with the following priority:
 2.  **Named Parameter Routes**: Routes with path parameters (e.g., `/users/:id`) are matched next if no static route fits.
 3.  **Catch-All Routes**: Routes with catch-all parameters (e.g., `/files/*filepath`) have the lowest priority and match if no static or named parameter route fits.
 
-Within the same priority level (e.g., multiple static routes at the same tree depth), the router's behavior is deterministic, but relying on specific ordering of equally specific routes is generally discouraged. Design your routes to be unambiguous.
+Within the same priority level (e.g., multiple static routes at the same tree depth), the router's behavior is deterministic due to the sorted nature of child nodes in the tree, but relying on specific ordering of equally specific routes is generally discouraged. Design your routes to be unambiguous.
 
 If a path is matched but the HTTP method is not defined for that path, the `MethodNotAllowedHandler` is invoked. If no path matches at all, the `NotFoundHandler` is invoked.
 
 ## 9. Printing Registered Routes
 
-For debugging purposes, especially in `DebugMode`, Xylium can print all registered routes to the logger when the server starts. This functionality is built into the `Tree.PrintRoutes(logger Logger)` method, which is called by the router's server startup methods (`ListenAndServeGracefully`, etc.) when in `DebugMode`.
+For debugging purposes, especially in `DebugMode`, Xylium can print all registered routes to the logger when the server starts. This functionality is built into the `Tree.PrintRoutes(logger Logger)` method, which is called by the router's server startup methods (e.g., `ListenAndServeGracefully`, `Start`) when in `DebugMode`.
 
 Example log output in `DebugMode`:
 ```
-[XYLIUM-BOOTSTRAP] Mode set to 'debug' from internal default.
-...
 [XYLIUM-ROUTER] Xylium Router initialized (Adopting Mode: debug, Determined By: internal_default)
 ...
 [XYLIUM-ROUTER] Printing registered routes for ListenAndServeGracefully on :8080:
