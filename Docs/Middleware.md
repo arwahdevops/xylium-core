@@ -18,7 +18,7 @@ Middleware in Xylium are functions that can process an HTTP request before it re
     *   [6.3. Gzip Compression (`xylium.Gzip()`)](#63-gzip-compression-xyliumgzip)
     *   [6.4. CORS (`xylium.CORS()`)](#64-cors-xyliumcors)
     *   [6.5. CSRF Protection (`xylium.CSRF()`)](#65-csrf-protection-xyliumcsrf)
-    *   [6.6. BasicAuth (`xylium.BasicAuth()`)](#66-basicauth-xyliumbasicauth)
+    *   [6.6. BasicAuth (`xylium.BasicAuthWithConfig()`)](#66-basicauth-xyliumbasicauthwithconfig)
     *   [6.7. Rate Limiter (`xylium.RateLimiter()`)](#67-rate-limiter-xyliumratelimiter)
     *   [6.8. Timeout (`xylium.Timeout()`)](#68-timeout-xyliumtimeout)
     *   [6.9. OpenTelemetry (via `xylium-otel` Connector)](#69-opentelemetry-via-xylium-otel-connector)
@@ -30,6 +30,7 @@ Middleware in Xylium are functions that can process an HTTP request before it re
 In Xylium, middleware is a function that takes a `xylium.HandlerFunc` (the next handler in the chain) and returns a new `xylium.HandlerFunc`. The signature is:
 
 ```go
+// From src/xylium/types.go
 type Middleware func(next HandlerFunc) HandlerFunc
 ```
 
@@ -50,7 +51,6 @@ Here's an example of a simple custom middleware that logs the request method, pa
 package main
 
 import (
-	"net/http" // For http.StatusOK
 	"time"
 	"github.com/arwahdevops/xylium-core/src/xylium"
 )
@@ -76,8 +76,7 @@ func SimpleRequestLogger() xylium.Middleware {
 			if c.Ctx != nil { // Guard against nil context if an early panic or issue occurs
 			    statusCode = c.Ctx.Response.StatusCode()
 			}
-
-
+			
 			logFields := xylium.M{
 				"status_code": statusCode,
 				"latency_ms":  latency.Milliseconds(),
@@ -96,7 +95,7 @@ func SimpleRequestLogger() xylium.Middleware {
 	}
 }
 
-func main() {
+func main_custom_mw() { // Renamed main
 	app := xylium.New()
 
 	// Apply custom middleware globally
@@ -104,12 +103,12 @@ func main() {
 	app.Use(SimpleRequestLogger())
 
 	app.GET("/hello", func(c *xylium.Context) error {
-		return c.String(http.StatusOK, "Hello from Xylium with custom logger!")
+		return c.String(xylium.StatusOK, "Hello from Xylium with custom logger!")
 	})
 
-	if err := app.Start(":8080"); err != nil {
-		app.Logger().Fatalf("Server error: %v", err)
-	}
+	// if err := app.Start(":8080"); err != nil {
+	// 	app.Logger().Fatalf("Server error: %v", err)
+	// }
 }
 ```
 
@@ -122,8 +121,10 @@ Middleware can be applied at different levels:
 Applied to all routes using `app.Use(middleware ...xylium.Middleware)`.
 
 ```go
-app := xylium.New()
-app.Use(xylium.RequestID())   // Applied first to all requests
+// app := xylium.New() // Assuming app is initialized
+// func MyCustomAuthMiddleware() xylium.Middleware { /* ... */ return nil }
+
+// app.Use(xylium.RequestID())   // Applied first to all requests
 // app.Use(MyCustomAuthMiddleware()) // Applied second to all requests
 // ... other global middleware ...
 ```
@@ -133,11 +134,12 @@ app.Use(xylium.RequestID())   // Applied first to all requests
 Applied to individual routes as variadic arguments after the handler function.
 
 ```go
-// func SpecificAuthCheck(next xylium.HandlerFunc) xylium.HandlerFunc { /* ... */ return next }
-// func AdminOnlyCheck(next xylium.HandlerFunc) xylium.HandlerFunc { /* ... */ return next }
+// func SpecificAuthCheck() xylium.Middleware { /* ... */ return nil }
+// func AdminOnlyCheck() xylium.Middleware    { /* ... */ return nil }
 // func AdminDashboardHandler(c *xylium.Context) error { /* ... */ return nil }
+// app := xylium.New() // Assuming app is initialized
 
-// app.GET("/admin/dashboard", AdminDashboardHandler, SpecificAuthCheck, AdminOnlyCheck)
+// app.GET("/admin/dashboard", AdminDashboardHandler, SpecificAuthCheck(), AdminOnlyCheck())
 ```
 
 ### 3.3. Group-Specific Middleware
@@ -145,19 +147,20 @@ Applied to individual routes as variadic arguments after the handler function.
 Applied to a group of routes using `group.Use(...)` or when creating the group.
 
 ```go
-// func APILoggingMiddleware(next xylium.HandlerFunc) xylium.HandlerFunc { /* ... */ return next }
-// func APIVersionCheckMiddleware(next xylium.HandlerFunc) xylium.HandlerFunc { /* ... */ return next }
-// func ListUsersHandler(c *xylium.Context) error { /* ... */ return nil }
-// func CreateProductHandler(c *xylium.Context) error { /* ... */ return nil }
-// func ProductValidationMiddleware(next xylium.HandlerFunc) xylium.HandlerFunc { /* ... */ return next }
+// func APILoggingMiddleware() xylium.Middleware      { /* ... */ return nil }
+// func APIVersionCheckMiddleware() xylium.Middleware { /* ... */ return nil }
+// func ListUsersHandler(c *xylium.Context) error      { /* ... */ return nil }
+// func CreateProductHandler(c *xylium.Context) error  { /* ... */ return nil }
+// func ProductValidationMiddleware() xylium.Middleware{ /* ... */ return nil }
+// app := xylium.New() // Assuming app is initialized
 
 
-// apiGroup := app.Group("/api", APILoggingMiddleware) // APILoggingMiddleware is applied here
+// apiGroup := app.Group("/api", APILoggingMiddleware()) // APILoggingMiddleware is applied here
 // {
-// 	apiGroup.Use(APIVersionCheckMiddleware) // Applied to all routes in /api/* after APILoggingMiddleware
+// 	apiGroup.Use(APIVersionCheckMiddleware()) // Applied to all routes in /api/* after APILoggingMiddleware
 
 // 	apiGroup.GET("/users", ListUsersHandler) // Both middlewares run
-// 	apiGroup.POST("/products", CreateProductHandler, ProductValidationMiddleware) // All three middlewares run for this route
+// 	apiGroup.POST("/products", CreateProductHandler, ProductValidationMiddleware()) // All three middlewares run for this route
 // }
 ```
 
@@ -171,9 +174,9 @@ Middleware execution follows an "onion" or "Russian doll" model:
 Within each level, the request flows "in" through each middleware until it reaches the `next(c)` call, then flows "out" as `next(c)` returns.
 
 **Example:**
-`app.Use(M1)`
-`group := app.Group("/path", M2)`
-`group.GET("/sub", Handler, M3)`
+`app.Use(M1())`
+`group := app.Group("/path", M2())`
+`group.GET("/sub", Handler, M3())`
 
 Execution order for `GET /path/sub`:
 1.  M1 (before `next`)
@@ -195,26 +198,33 @@ Middleware can pass data to subsequent middleware or to the final route handler 
 Use defined constants (e.g., from `xylium/types.go` like `xylium.ContextKeyRequestID`) for keys to ensure consistency and avoid magic strings.
 
 ```go
-// Define a context key (best practice: use an unexported type or well-known constants)
-// const UserContextKey = "authenticated_user" // Assume this is defined elsewhere
+// Define a context key (best practice: use an unexported type or well-known constants from types.go)
+const UserContextKey = "authenticated_user_info" // Example custom key
 
-// func AuthMiddleware(next xylium.HandlerFunc) xylium.HandlerFunc {
-// 	return func(c *xylium.Context) error {
-// 		// ... authentication logic ...
-// 		// Assume user is authenticated and user info is in `userInfo`
-// 		// userInfo := map[string]string{"id": "123", "role": "admin"}
-// 		// c.Set(UserContextKey, userInfo) // Use your defined key
-// 		return next(c)
+// func AuthMiddleware() xylium.Middleware {
+// 	return func(next xylium.HandlerFunc) xylium.HandlerFunc {
+// 		return func(c *xylium.Context) error {
+// 			// ... authentication logic ...
+// 			// Assume user is authenticated and user info is in `userInfo`
+// 			userInfo := map[string]string{"id": "123", "role": "admin"}
+// 			c.Set(UserContextKey, userInfo) // Use your defined key
+// 			return next(c)
+// 		}
 // 	}
 // }
 
 // func UserProfileHandler(c *xylium.Context) error {
 // 	userInfoVal, exists := c.Get(UserContextKey)
 // 	if !exists {
-// 		return c.Status(http.StatusForbidden).String("Access denied.")
+// 		// Use Xylium's status constants
+// 		return c.Status(xylium.StatusForbidden).String("Access denied: User information not found.")
 // 	}
-// 	typedUserInfo := userInfoVal.(map[string]string) // Type assertion
-// 	return c.JSON(http.StatusOK, xylium.M{"profile": typedUserInfo})
+// 	typedUserInfo, ok := userInfoVal.(map[string]string) // Type assertion
+//  if !ok {
+//      c.Logger().Error("User info in context is not of expected type map[string]string")
+//      return xylium.NewHTTPError(xylium.StatusInternalServerError, "Internal error processing user profile.")
+//  }
+// 	return c.JSON(xylium.StatusOK, xylium.M{"profile": typedUserInfo})
 // }
 ```
 
@@ -232,14 +242,14 @@ Xylium provides a suite of commonly used middleware.
     *   Sets the ID in the response header (using the configured `HeaderName`).
 *   **Usage**:
     ```go
-    app.Use(xylium.RequestID())
+    // app.Use(xylium.RequestID())
     // Or with custom config:
     // app.Use(xylium.RequestIDWithConfig(xylium.RequestIDConfig{
     //  HeaderName: "X-Correlation-ID",
     //  Generator: func() string { return "my-custom-id-" + time.Now().String() },
     // }))
     ```
-*   **Integration**: `c.Logger()` automatically includes `xylium_request_id` (or the corresponding key name) in log fields if this middleware is used.
+*   **Integration**: `c.Logger()` automatically includes `xylium_request_id` (or the string value of `xylium.ContextKeyRequestID`) in log fields if this middleware is used.
 
 ### 6.2. Logger (Automatic Integration via `c.Logger()`)
 
@@ -256,18 +266,18 @@ There isn't a distinct `xylium.LoggerMiddleware()` to *enable* basic logging as 
     *   Sets `Content-Encoding: gzip` and `Vary: Accept-Encoding` response headers.
 *   **Usage**:
     ```go
-    app.Use(xylium.Gzip()) // Uses default settings
+    // app.Use(xylium.Gzip()) // Uses default settings (xylium.CompressDefaultCompression)
 
     // With custom configuration:
-    // import "github.com/valyala/fasthttp" // For fasthttp compression level constants
+    // import "github.com/arwahdevops/xylium-core/src/xylium" // For xylium.Compress* constants
     // app.Use(xylium.GzipWithConfig(xylium.GzipConfig{
-    //  Level:     xylium.CompressBestSpeed, // Use Xylium's constants
+    //  Level:     xylium.CompressBestSpeed, // Use Xylium's compression level constants
     //  MinLength: 1024, // Only compress if body is > 1KB
     //  ContentTypes: []string{"application/json", "text/html", "application/vnd.api+json"},
     // }))
     ```
 *   **Notes**:
-    *   `GzipConfig.Level` defaults to `xylium.CompressDefaultCompression`.
+    *   `GzipConfig.Level` defaults to `xylium.CompressDefaultCompression`. If `xylium.CompressNoCompression` is provided, it also defaults to `xylium.CompressDefaultCompression`.
     *   `GzipConfig.MinLength` defaults to `0` (compress all eligible sizes).
     *   `GzipConfig.ContentTypes` defaults to a list of common types like `text/html`, `application/json`, etc. (see `middleware_compress.go`).
 
@@ -280,81 +290,80 @@ There isn't a distinct `xylium.LoggerMiddleware()` to *enable* basic logging as 
 *   **Usage**:
     ```go
     // IMPORTANT: Default `AllowOrigins` is EMPTY (`[]string{}`), meaning NO cross-origin requests are allowed by default.
-    // app.Use(xylium.CORS()) // THIS WILL NOT ALLOW ANY CROSS-ORIGIN REQUESTS
+    // app.Use(xylium.CORS()) // THIS WILL BLOCK ALL CROSS-ORIGIN REQUESTS
 
     // Recommended: Configure explicitly for your needs.
-    app.Use(xylium.CORSWithConfig(xylium.CORSConfig{
-     AllowOrigins:     []string{"https://example.com", "http://localhost:3000"},
-     AllowMethods:     []string{"GET", "POST", "PUT", "DELETE"}, // Adjust to your supported methods
-     AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-CSRF-Token"},
-     AllowCredentials: true, // If cookies/auth headers from different origins are needed.
-     MaxAge:           3600, // Cache preflight response for 1 hour (in seconds).
-    }))
+    // app.Use(xylium.CORSWithConfig(xylium.CORSConfig{
+    //  AllowOrigins:     []string{"https://example.com", "http://localhost:3000"},
+    //  AllowMethods:     []string{"GET", "POST", "PUT", "DELETE"}, // Adjust to your supported methods
+    //  AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-CSRF-Token"},
+    //  AllowCredentials: true, // If cookies/auth headers from different origins are needed.
+    //  MaxAge:           3600, // Cache preflight response for 1 hour (in seconds).
+    // }))
     ```
 *   **Security Note**:
     *   **`DefaultCORSConfig.AllowOrigins` is `[]string{}` (an empty slice). You *must* configure `AllowOrigins` for any cross-origin requests to be permitted.**
-    *   Setting `AllowOrigins: []string{"*"}` allows all origins, which should be used with extreme caution, especially if `AllowCredentials: true` (as browsers will block `ACAO: *` with credentials). If credentials are allowed, you must reflect the specific origin in ACAO.
+    *   Setting `AllowOrigins: []string{"*"}` allows all origins, which should be used with extreme caution, especially if `AllowCredentials: true` (as browsers will block `ACAO: *` with credentials). If credentials are allowed, you must reflect the specific origin in ACAO, or list specific origins.
 *   Refer to `middleware_cors.go` for all `CORSConfig` options.
 
 ### 6.5. CSRF Protection (`xylium.CSRF()`)
 
 *   **Purpose**: Protects against Cross-Site Request Forgery attacks, typically using the Double Submit Cookie pattern.
 *   **Behavior**:
-    *   On safe HTTP methods (GET, HEAD, OPTIONS, TRACE, or other configured safe methods), it generates a CSRF token, sets it in a cookie (e.g., `_csrf_token`), and stores it in `c.store` (key `xylium.ContextKeyCSRFToken` by default, or `CSRFConfig.ContextTokenKey`). This token can be embedded in HTML forms by the handler.
+    *   On safe HTTP methods (GET, HEAD, OPTIONS, TRACE, or other configured safe methods), it generates a CSRF token, sets it in a cookie (e.g., `_csrf_token`), and stores it in `c.store` (default key `xylium.ContextKeyCSRFToken`). This token can be embedded in HTML forms by the handler.
     *   On unsafe HTTP methods (e.g., POST, PUT, DELETE, PATCH), it validates the token from the cookie against a token submitted by the client (e.g., in a request header like `X-CSRF-Token` or a form field like `_csrf`).
-    *   If validation fails, it calls an error handler (defaulting to HTTP 403 Forbidden).
+    *   If validation fails, it calls an error handler (defaulting to HTTP `xylium.StatusForbidden`).
 *   **Usage**:
     ```go
     // Using default config (cookie "_csrf_token", header "X-CSRF-Token", form "_csrf")
     // app.Use(xylium.CSRF())
 
     // Example with custom config (e.g., for SPA that reads token from a non-HTTPOnly cookie)
-    secureCookie := true // Should be true in production (HTTPS)
-    httpOnlyCookie := false // Set to false if JavaScript needs to read the cookie
-    if xylium.Mode() != xylium.ReleaseMode {
-        // For local HTTP development, Secure flag might need to be false
-        // secureCookie = false
-    }
-    app.Use(xylium.CSRFWithConfig(xylium.CSRFConfig{
-     CookieName:     "_my_app_csrf_token",
-     CookieHTTPOnly: &httpOnlyCookie, // JavaScript can read this cookie
-     CookieSecure:   &secureCookie,   // Send only over HTTPS
-     HeaderName:     "X-XSRF-TOKEN",  // Common header for SPAs (e.g., Angular, Axios)
-     // TokenLookup: "header:X-XSRF-TOKEN,form:csrf_token_field", // Explicit lookup order
-    }))
+    // app := xylium.New() // Assuming app is initialized
+    // secureCookie := app.CurrentMode() == xylium.ReleaseMode // True in release, false otherwise (for local HTTP)
+    // httpOnlyForSPA := false // Set to false if JavaScript needs to read the cookie
+    
+    // app.Use(xylium.CSRFWithConfig(xylium.CSRFConfig{
+    //  CookieName:     "_my_app_csrf_token",
+    //  CookieHTTPOnly: &httpOnlyForSPA, // JavaScript can read this cookie
+    //  CookieSecure:   &secureCookie,   // Send only over HTTPS in production
+    //  HeaderName:     "X-XSRF-TOKEN",  // Common header for SPAs (e.g., Angular, Axios)
+    //  // TokenLookup: "header:X-XSRF-TOKEN,form:csrf_token_field", // Explicit lookup order
+    //  ContextTokenKey: xylium.ContextKeyCSRFToken, // Default, can be customized
+    // }))
     ```
 *   **Important `CookieHTTPOnly`**: The default for `CSRFConfig.CookieHTTPOnly` (via `DefaultCSRFConfig`) is `true`. If your frontend JavaScript needs to read the CSRF token from the cookie (common in SPAs to send it back in a header), you **must** configure `CookieHTTPOnly` to `false` (e.g., `myHttpOnly := false; cfg.CookieHTTPOnly = &myHttpOnly`).
-*   **Token Availability**: The CSRF token for the *next* request is available in the *current* request's context via `c.Get(config.ContextTokenKey)`. Handlers can use this to embed the token in HTML forms.
+*   **Token Availability**: The CSRF token for the *next* request is available in the *current* request's context via `c.Get(config.ContextTokenKey)` (e.g., `c.Get(xylium.ContextKeyCSRFToken)` by default). Handlers can use this to embed the token in HTML forms or send it to SPAs.
 *   Refer to `middleware_csrf.go` for all `CSRFConfig` options and details on `DefaultCSRFConfig`.
 
-### 6.6. BasicAuth (`xylium.BasicAuth()`)
+### 6.6. BasicAuth (`xylium.BasicAuthWithConfig()`)
 
 *   **Purpose**: Implements HTTP Basic Authentication (RFC 7617).
 *   **Behavior**:
     *   Parses the `Authorization: Basic <credentials>` header.
     *   Calls a user-provided `Validator` function to check the username and password.
     *   If valid, optionally stores authenticated user information (returned by the validator) in `c.store` (default key `"user"`, configurable via `BasicAuthConfig.ContextUserKey`).
-    *   If invalid, header missing, or malformed, it calls an error handler. The default error handler sends an HTTP 401 Unauthorized response with a `WWW-Authenticate: Basic realm="..."` header.
+    *   If invalid, header missing, or malformed, it calls an error handler. The default error handler sends an HTTP `xylium.StatusUnauthorized` response with a `WWW-Authenticate: Basic realm="..."` header.
 *   **Usage**:
     ```go
     // Validator function: (username, password, context) -> (userInfo, isValid, error)
-    myAuthValidator := func(username, password string, c *xylium.Context) (interface{}, bool, error) {
-        if username == "admin" && password == "secretP@ssw0rd" {
-            // Store user details in context if needed by handlers
-            return map[string]string{"username": username, "role": "administrator"}, true, nil
-        }
-        return nil, false, nil // Invalid credentials
-        // return nil, false, errors.New("database error") // If validator itself failed
-    }
+    // myAuthValidator := func(username, password string, c *xylium.Context) (interface{}, bool, error) {
+    //     if username == "admin" && password == "secretP@ssw0rd" {
+    //         // Store user details in context if needed by handlers
+    //         return map[string]string{"username": username, "role": "administrator"}, true, nil
+    //     }
+    //     return nil, false, nil // Invalid credentials
+    //     // return nil, false, errors.New("database error") // If validator itself failed
+    // }
 
-    app.Use(xylium.BasicAuthWithConfig(xylium.BasicAuthConfig{
-        Validator: myAuthValidator,
-        Realm:     "My Protected Application Area",
-        // ContextUserKey: "authedUser", // Optional: customize context key
-        // ErrorHandler: func(c *xylium.Context) error { // Optional: custom error response
-        //     return c.Status(http.StatusForbidden).String("Custom auth failure message.")
-        // },
-    }))
+    // app.Use(xylium.BasicAuthWithConfig(xylium.BasicAuthConfig{
+    //     Validator: myAuthValidator,
+    //     Realm:     "My Protected Application Area",
+    //     // ContextUserKey: "authedUser", // Optional: customize context key
+    //     // ErrorHandler: func(c *xylium.Context, err error) error { // Optional: custom error response
+    //     //     return c.Status(xylium.StatusForbidden).String("Custom auth failure message.")
+    //     // },
+    // }))
     ```
 *   The `xylium.BasicAuth(validatorFunc)` shorthand is deprecated; prefer `BasicAuthWithConfig`.
 *   Refer to `middleware_basicauth.go` for `BasicAuthConfig` details.
@@ -363,21 +372,22 @@ There isn't a distinct `xylium.LoggerMiddleware()` to *enable* basic logging as 
 
 *   **Purpose**: Limits the number of requests a client can make within a specific time window.
 *   **Behavior**:
-    *   Uses a `LimiterStore` (default is an `InMemoryStore` managed by Xylium) to track request counts per key.
+    *   Uses a `LimiterStore` (default is an `InMemoryStore` managed by Xylium if `config.Store` is `nil`) to track request counts per key.
     *   The key defaults to the client's IP address (`c.RealIP()`), configurable via `RateLimiterConfig.KeyGenerator`.
-    *   If the limit is exceeded, it returns an HTTP 429 Too Many Requests response with `Retry-After` and `X-RateLimit-*` headers (configurable).
+    *   If the limit is exceeded, it returns an HTTP `xylium.StatusTooManyRequests` response with `Retry-After` and `X-RateLimit-*` headers (configurable).
 *   **Usage**:
     ```go
-    import "time"
+    // import "time"
+    // app := xylium.New() // Assuming app is initialized
 
     // Global rate limiter: 100 requests per minute per IP.
-    // The InMemoryStore created here will be managed by Xylium's graceful shutdown.
-    app.Use(xylium.RateLimiter(xylium.RateLimiterConfig{
-        MaxRequests:    100,
-        WindowDuration: 1 * time.Minute,
-        Message:        "Global rate limit exceeded. Please try again later.",
-        LoggerForStore: app.Logger(), // Provide app logger to internal store
-    }))
+    // The InMemoryStore created here will be registered with the router for graceful shutdown.
+    // app.Use(xylium.RateLimiter(xylium.RateLimiterConfig{
+    //     MaxRequests:    100,
+    //     WindowDuration: 1 * time.Minute,
+    //     Message:        "Global rate limit exceeded. Please try again later.",
+    //     LoggerForStore: app.Logger().WithFields(xylium.M{"limiter_id": "global"}), // Provide logger to internal store
+    // }))
 
     // Route-specific rate limiter for a sensitive action
     // func SensitiveActionHandler(c *xylium.Context) error { /* ... */ return nil }
@@ -388,7 +398,7 @@ There isn't a distinct `xylium.LoggerMiddleware()` to *enable* basic logging as 
     //     LoggerForStore: app.Logger().WithFields(xylium.M{"limiter_id": "sensitive_action"}),
     // }))
     ```
-*   **Store Management**: If you use multiple `RateLimiter` middlewares with the default `InMemoryStore` (i.e., `config.Store` is `nil`), each will create its own store instance. Xylium's graceful shutdown will attempt to close all such internally created stores by calling `router.addInternalStore`. For shared rate limit state across different limiters, create a single `LimiterStore` instance, pass it to each `RateLimiterConfig`, and register it with the router for graceful shutdown (e.g., `app.RegisterCloser(mySharedStore)`).
+*   **Store Management**: If you use multiple `RateLimiter` middlewares and let Xylium create the default `InMemoryStore` for each (by leaving `config.Store` as `nil`), each will have its own independent store instance. Xylium's router will register these internally created stores for graceful shutdown. For shared rate limit state across different limiters (e.g., a global store instance), create a single `LimiterStore` instance (like `xylium.NewInMemoryStore(...)`), pass it to each `RateLimiterConfig.Store`, and then register that shared store instance with the router for graceful shutdown using `app.RegisterCloser(mySharedStore)`.
 *   Refer to `middleware_ratelimiter.go` for `RateLimiterConfig`, `LimiterStore` interface, `InMemoryStore` details, and header customization options.
 
 ### 6.8. Timeout (`xylium.Timeout()`)
@@ -396,14 +406,15 @@ There isn't a distinct `xylium.LoggerMiddleware()` to *enable* basic logging as 
 *   **Purpose**: Sets a maximum processing time for requests handled by subsequent handlers in the chain.
 *   **Behavior**:
     *   Uses `context.WithTimeout` to create a new Go `context.Context` for the request, which is then propagated via `c.WithGoContext()`.
-    *   If processing by `next(c)` exceeds the timeout, `c.GoContext().Done()` is closed.
-    *   An error handler is invoked (default sends HTTP 503 Service Unavailable).
+    *   If processing by `next(c)` exceeds the timeout, `c.GoContext().Done()` is closed (for the timed context).
+    *   An error handler is invoked (default sends HTTP `xylium.StatusServiceUnavailable`).
 *   **Usage**:
     ```go
-    import "time"
+    // import "time"
+    // app := xylium.New() // Assuming app is initialized
 
     // Global 10-second timeout for all requests.
-    app.Use(xylium.Timeout(10 * time.Second))
+    // app.Use(xylium.Timeout(10 * time.Second))
 
     // With custom configuration:
     // app.Use(xylium.TimeoutWithConfig(xylium.TimeoutConfig{
@@ -416,7 +427,7 @@ There isn't a distinct `xylium.LoggerMiddleware()` to *enable* basic logging as 
     //      c.Logger().Errorf("Request timed out: %v for path %s", err, c.Path())
     //      // Ensure response is not already committed if handler wrote something before timeout
     //      if !c.ResponseCommitted() {
-    //          return c.Status(http.StatusGatewayTimeout).JSON(xylium.M{"error": "Request timed out (custom handler)"})
+    //          return c.Status(xylium.StatusGatewayTimeout).JSON(xylium.M{"error": "Request timed out (custom handler)"})
     //      }
     //      return err // Propagate original timeout error if response already sent
     //  },
@@ -428,14 +439,14 @@ There isn't a distinct `xylium.LoggerMiddleware()` to *enable* basic logging as 
 ### 6.9. OpenTelemetry (via `xylium-otel` Connector)
 
 *   **Purpose**: Integrates with OpenTelemetry for distributed tracing.
-*   **Behavior**: This functionality is now managed by the dedicated `xylium-otel` connector. The connector provides middleware to automatically instrument requests, manage OTel SDK setup (TracerProvider, Exporter, etc.), and integrate with Xylium's context and logger.
+*   **Behavior**: This functionality is managed by the dedicated `xylium-otel` connector. The connector provides middleware to automatically instrument requests, manage OTel SDK setup (TracerProvider, Exporter, etc.), and integrate with Xylium's context and logger.
 *   **Usage**:
-    1.  Install the connector: `go get github.com/arwahdevops/xylium-otel` (adjust path if needed).
+    1.  Install the connector: `go get github.com/arwahdevops/xylium-otel` (or the actual connector path).
     2.  Initialize the `xyliumotel.Connector` in your application.
     3.  Use `otelConnector.OtelMiddleware()` to apply the tracing middleware.
 *   **Refer to**:
-    *   The documentation for the **[`xylium-otel` connector](LINK_TO_XYLIUM_OTEL_README)** for detailed setup, configuration, and usage instructions. (*Replace `LINK_TO_XYLIUM_OTEL_README` with the actual URL if available*).
+    *   The documentation for the **`xylium-otel` connector** (link to its README or documentation).
     *   `Docs/XyliumConnectors.md` for an overview of Xylium's connector philosophy.
-    *   `Docs/OpenTelemetry.md` (if present, or in the `xylium-otel` README) in Xylium Core for general concepts on how Xylium supports OTel integration.
+    *   The `xylium-otel` README or its own documentation for specific details on how it uses `xylium.ContextKeyOtelTraceID` and `xylium.ContextKeyOtelSpanID`.
 
 By leveraging Xylium's middleware system and its built-in components (or dedicated connectors), you can build robust, secure, and observable web applications efficiently.

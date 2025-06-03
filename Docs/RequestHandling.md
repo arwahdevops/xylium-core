@@ -47,6 +47,8 @@ Path parameters are dynamic segments captured from the URL path, defined in rout
 *   `c.ParamIntDefault(name string, def int) int`: Parses as int, returns default on error.
 
 ```go
+// import "github.com/arwahdevops/xylium-core/src/xylium"
+
 // Route: app.GET("/items/:category/:itemId", GetItemHandler)
 // Request: GET /items/electronics/123
 
@@ -56,14 +58,15 @@ func GetItemHandler(c *xylium.Context) error {
 
 	itemId, err := c.ParamInt("itemId")
 	if err != nil {
-		return xylium.NewHTTPError(http.StatusBadRequest, "Invalid item ID format").WithInternal(err)
+		// Use Xylium's status constants and NewHTTPError
+		return xylium.NewHTTPError(xylium.StatusBadRequest, "Invalid item ID format").WithInternal(err)
 	}
 	// itemId is now an int: 123
 
 	// Using default
 	legacyId := c.ParamIntDefault("legacyId", 0) // If "legacyId" param doesn't exist
 
-	return c.JSON(http.StatusOK, xylium.M{
+	return c.JSON(xylium.StatusOK, xylium.M{
 		"category":    category,
 		"item_id_str": itemIdStr,
 		"item_id_int": itemId,
@@ -93,7 +96,7 @@ func ListProductsHandler(c *xylium.Context) error {
 	allParams := c.QueryParams()
 	// allParams will be map[string]string{"name": "laptop", "sort": "price_asc"}
 
-	return c.JSON(http.StatusOK, xylium.M{
+	return c.JSON(xylium.StatusOK, xylium.M{
 		"query_name": productName,
 		"sort_by":    sortBy,
 		"category":   category,
@@ -127,7 +130,7 @@ func FilterResultsHandler(c *xylium.Context) error {
 		tags = append(tags, string(tb))
 	}
 
-	return c.JSON(http.StatusOK, xylium.M{
+	return c.JSON(xylium.StatusOK, xylium.M{
 		"statuses_found": statuses, // ["active", "pending"]
 		"tags_found":     tags,     // ["go", "web"]
 	})
@@ -146,12 +149,15 @@ For easier handling of multi-value parameters, binding to a struct field of type
 func ListItemsHandler(c *xylium.Context) error {
 	page, err := c.QueryParamInt("page")
 	if err != nil {
-		page = 1 // Default to page 1 if error or not present
+		// Example: handle error or default. For defaulting, QueryParamIntDefault is better.
+		// Here we log and default.
+		c.Logger().Debugf("Query param 'page' parsing error or missing: %v. Defaulting to 1.", err)
+		page = 1 
 	}
 
 	limit := c.QueryParamIntDefault("limit", 10) // Default to 10 if error or not present
 
-	return c.JSON(http.StatusOK, xylium.M{"page": page, "limit": limit})
+	return c.JSON(xylium.StatusOK, xylium.M{"page": page, "limit": limit})
 }
 ```
 
@@ -177,7 +183,7 @@ func SubmitFormHandler(c *xylium.Context) error {
 	allPostParams := c.PostFormParams()
 	// allPostParams: map[string]string{"name":"John Doe", "email":"john@example.com"}
 
-	return c.JSON(http.StatusOK, xylium.M{
+	return c.JSON(xylium.StatusOK, xylium.M{
 		"name_submitted": name,
 		"email_submitted": email,
 		"subject": subject,
@@ -201,6 +207,8 @@ When a client sends data as JSON (`Content-Type: application/json`).
 This is the most common and recommended way. Use `c.BindAndValidate(&yourStruct)` or `c.Bind(&yourStruct)`. Struct fields should have `json:"fieldName"` tags.
 
 ```go
+// import "github.com/arwahdevops/xylium-core/src/xylium"
+
 type CreateProductInput struct {
 	Name        string  `json:"name" validate:"required"`
 	Price       float64 `json:"price" validate:"gte=0"`
@@ -221,7 +229,7 @@ func CreateProductHandler(c *xylium.Context) error {
 
 	// Process the validated 'input'
 	c.Logger().Infof("Product to create: %+v", input)
-	return c.JSON(http.StatusCreated, xylium.M{"product_id": "new_id", "product_data": input})
+	return c.JSON(xylium.StatusCreated, xylium.M{"product_id": "new_id", "product_data": input})
 }
 ```
 Refer to **`ContextBinding.md` (Section 3.2 & 5.1)** for comprehensive details.
@@ -249,10 +257,10 @@ func GenericJsonHandler(c *xylium.Context) error {
 		c.Logger().Infof("key1: %s", val)
 	}
 
-	return c.JSON(http.StatusOK, jsonData)
+	return c.JSON(xylium.StatusOK, jsonData)
 }
 ```
-Alternatively, you can use `json.Unmarshal(c.Body(), &jsonData)` for direct unmarshalling.
+Alternatively, you can use `json.Unmarshal(c.Body(), &jsonData)` for direct unmarshalling if `c.Bind`'s behavior is not desired.
 
 ## 5. Reading XML Request Body
 
@@ -264,6 +272,8 @@ Similar to JSON, use `c.BindAndValidate(&yourStruct)` or `c.Bind(&yourStruct)`. 
 
 ```go
 import "encoding/xml" // For xml.Name if needed in struct
+// import "github.com/arwahdevops/xylium-core/src/xylium"
+
 
 type ItemXML struct {
 	XMLName xml.Name `xml:"item"` // Optional: specifies the root XML element name
@@ -277,11 +287,11 @@ type ItemXML struct {
 // Body: <item id="x1"><name>My Item</name><priceValue>20.50</priceValue></item>
 func CreateItemXMLHandler(c *xylium.Context) error {
 	var item ItemXML
-	if err := c.BindAndValidate(&item); err != nil {
+	if err := c.BindAndValidate(&item); err != nil { // Assumes ItemXML has validate tags if needed
 		return err
 	}
 	c.Logger().Infof("XML Item received: %+v", item)
-	return c.JSON(http.StatusCreated, item) // Responding with JSON for simplicity here
+	return c.JSON(xylium.StatusCreated, item) // Responding with JSON for simplicity here
 }
 ```
 Refer to **`ContextBinding.md` (Section 3.2 & 5.2)** for more information.
@@ -298,7 +308,7 @@ For a complete guide on data binding, including custom binding with `XBind`, ref
 Validation is typically performed after binding data to a struct using `c.BindAndValidate()`. Xylium uses `go-playground/validator/v10` and `validate` struct tags.
 
 ### Refer to `ContextBinding.md`
-For comprehensive details on validation tags, handling validation errors, and using a custom validator instance, please see the **[ContextBinding.md](./ContextBinding.md#6-validation)** documentation.
+For comprehensive details on validation tags, handling validation errors (including the format of error details), and using a custom validator instance, please see the **[ContextBinding.md](./ContextBinding.md#6-validation)** documentation.
 
 ## 8. Handling File Uploads (Single and Multiple)
 
@@ -309,16 +319,24 @@ File uploads are usually part of `multipart/form-data` requests.
 Use `c.FormFile(key string) (*multipart.FileHeader, error)` to get a single uploaded file.
 
 ```go
+import (
+	// "net/http" // For http.ErrMissingFile, but fasthttp might use different errors or c.FormFile handles it.
+	"mime/multipart" // For *multipart.FileHeader
+	// "github.com/arwahdevops/xylium-core/src/xylium"
+)
+
 // POST /upload-avatar
 // Content-Type: multipart/form-data
 // Form field: name="avatar_file", type="file"
 func UploadAvatarHandler(c *xylium.Context) error {
 	fileHeader, err := c.FormFile("avatar_file")
 	if err != nil {
-		if err == http.ErrMissingFile { // fasthttp might use a different error, check its docs or Xylium's behavior
-			return xylium.NewHTTPError(http.StatusBadRequest, "Avatar file is required.")
+		// fasthttp.ErrMissingFile is the error returned by fasthttp's FormFile
+		// if the file is not present. Xylium's c.FormFile wraps this.
+		if err == fasthttp.ErrMissingFile { 
+			return xylium.NewHTTPError(xylium.StatusBadRequest, "Avatar file is required.")
 		}
-		return xylium.NewHTTPError(http.StatusInternalServerError, "Failed to retrieve avatar file.").WithInternal(err)
+		return xylium.NewHTTPError(xylium.StatusInternalServerError, "Failed to retrieve avatar file.").WithInternal(err)
 	}
 
 	c.Logger().Infof("Uploaded File: %s", fileHeader.Filename)
@@ -327,7 +345,7 @@ func UploadAvatarHandler(c *xylium.Context) error {
 
 	// To save the file, see Section 8.4
 
-	return c.String(http.StatusOK, "Avatar '%s' uploaded successfully.", fileHeader.Filename)
+	return c.String(xylium.StatusOK, "Avatar '%s' uploaded successfully.", fileHeader.Filename)
 }
 ```
 
@@ -336,20 +354,23 @@ func UploadAvatarHandler(c *xylium.Context) error {
 If multiple files are uploaded with the same form field name, you need to access the `multipart.Form`.
 
 ```go
+// import "mime/multipart"
+// import "github.com/arwahdevops/xylium-core/src/xylium"
+
 // POST /upload-gallery
 // Content-Type: multipart/form-data
 // Form fields: name="images", type="file" (multiple times)
 func UploadGalleryHandler(c *xylium.Context) error {
 	form, err := c.MultipartForm()
 	if err != nil {
-		return xylium.NewHTTPError(http.StatusBadRequest, "Invalid multipart form data.").WithInternal(err)
+		return xylium.NewHTTPError(xylium.StatusBadRequest, "Invalid multipart form data.").WithInternal(err)
 	}
 
 	// "images" is the key used in the form for file inputs
 	fileHeaders := form.File["images"] // This is a slice of *multipart.FileHeader
 
 	if len(fileHeaders) == 0 {
-		return xylium.NewHTTPError(http.StatusBadRequest, "No images uploaded for gallery.")
+		return xylium.NewHTTPError(xylium.StatusBadRequest, "No images uploaded for gallery.")
 	}
 
 	var uploadedFilenames []string
@@ -359,7 +380,7 @@ func UploadGalleryHandler(c *xylium.Context) error {
 		uploadedFilenames = append(uploadedFilenames, fileHeader.Filename)
 	}
 
-	return c.JSON(http.StatusOK, xylium.M{
+	return c.JSON(xylium.StatusOK, xylium.M{
 		"message":            "Gallery images uploaded.",
 		"uploaded_filenames": uploadedFilenames,
 		"count":              len(uploadedFilenames),
@@ -372,6 +393,9 @@ func UploadGalleryHandler(c *xylium.Context) error {
 `c.MultipartForm() (*multipart.Form, error)` gives you access to both regular form field values and uploaded files.
 
 ```go
+// import "mime/multipart"
+// import "github.com/arwahdevops/xylium-core/src/xylium"
+
 // POST /upload-document
 // Content-Type: multipart/form-data
 // Form field (text): name="title", value="My Report"
@@ -379,7 +403,7 @@ func UploadGalleryHandler(c *xylium.Context) error {
 func UploadDocumentHandler(c *xylium.Context) error {
 	form, err := c.MultipartForm()
 	if err != nil {
-		return xylium.NewHTTPError(http.StatusBadRequest, "Error parsing multipart form.").WithInternal(err)
+		return xylium.NewHTTPError(xylium.StatusBadRequest, "Error parsing multipart form.").WithInternal(err)
 	}
 
 	// Access regular form values
@@ -392,7 +416,7 @@ func UploadDocumentHandler(c *xylium.Context) error {
 	// Access uploaded files
 	fileHeaders := form.File["document_file"] // Slice of *multipart.FileHeader
 	if len(fileHeaders) == 0 {
-		return xylium.NewHTTPError(http.StatusBadRequest, "Document file is required.")
+		return xylium.NewHTTPError(xylium.StatusBadRequest, "Document file is required.")
 	}
 	documentFileHeader := fileHeaders[0]
 
@@ -401,7 +425,7 @@ func UploadDocumentHandler(c *xylium.Context) error {
 
 	// ... save documentFileHeader (see Section 8.4) ...
 
-	return c.String(http.StatusOK, "Document '%s' with title '%s' uploaded.", documentFileHeader.Filename, title)
+	return c.String(xylium.StatusOK, "Document '%s' with title '%s' uploaded.", documentFileHeader.Filename, title)
 }
 ```
 
@@ -411,10 +435,12 @@ After getting a `*multipart.FileHeader`, you need to open it and save its conten
 
 ```go
 import (
+	"fmt" // For fmt.Errorf
 	"io"
 	"os"
 	"path/filepath"
-	// ... other imports
+	"mime/multipart" // For *multipart.FileHeader
+	// "github.com/arwahdevops/xylium-core/src/xylium" // If used in a Xylium handler
 )
 
 func saveUploadedFile(fileHeader *multipart.FileHeader, destPath string) error {
@@ -447,23 +473,24 @@ func saveUploadedFile(fileHeader *multipart.FileHeader, destPath string) error {
 }
 
 // Example usage in a handler:
-// ... inside UploadAvatarHandler from 8.1 ...
+// // ... inside UploadAvatarHandler from 8.1 ...
 // fileHeader, err := c.FormFile("avatar_file")
-// ...
+// // ... error handling ...
+//
 // // Construct a safe destination path
 // // NEVER use fileHeader.Filename directly without sanitization for security.
 // // Example: create a unique filename or use a sanitized version.
 // safeFilename := filepath.Base(fileHeader.Filename) // Basic sanitization
-// destination := filepath.Join("./uploads/avatars", safeFilename)
+// destination := filepath.Join("./uploads/avatars", safeFilename) // Ensure "./uploads/avatars" exists and is writable
 //
 // if err := saveUploadedFile(fileHeader, destination); err != nil {
 //     c.Logger().Errorf("Failed to save uploaded file '%s' to '%s': %v", fileHeader.Filename, destination, err)
-//     return xylium.NewHTTPError(http.StatusInternalServerError, "Could not save uploaded file.")
+//     return xylium.NewHTTPError(xylium.StatusInternalServerError, "Could not save uploaded file.")
 // }
 // c.Logger().Infof("File '%s' saved to '%s'", fileHeader.Filename, destination)
-// ...
+// // ...
 ```
-**Security Note:** Always sanitize filenames from `fileHeader.Filename` before using them to construct file paths on your server to prevent path traversal attacks. `filepath.Base()` is a good start. Consider generating unique filenames.
+**Security Note:** Always sanitize filenames from `fileHeader.Filename` before using them to construct file paths on your server to prevent path traversal attacks. `filepath.Base()` is a good start. Consider generating unique filenames or using a more robust sanitization library.
 
 ## 9. Reading Request Headers
 
@@ -478,11 +505,11 @@ func CheckAuthHeaderHandler(c *xylium.Context) error {
 	customHeader := c.Header("X-Custom-Data")
 
 	if authToken == "" {
-		return c.Status(http.StatusUnauthorized).String("Authorization header missing.")
+		return c.Status(xylium.StatusUnauthorized).String("Authorization header missing.")
 	}
 
 	// Process headers...
-	return c.JSON(http.StatusOK, xylium.M{
+	return c.JSON(xylium.StatusOK, xylium.M{
 		"auth_token_present": authToken != "",
 		"user_agent":         userAgent,
 		"custom_data":        customHeader,
@@ -499,7 +526,7 @@ func CheckAuthHeaderHandler(c *xylium.Context) error {
 func DumpHeadersHandler(c *xylium.Context) error {
 	allHeaders := c.Headers()
 	c.Logger().Infof("All request headers: %+v", allHeaders)
-	return c.JSON(http.StatusOK, allHeaders)
+	return c.JSON(xylium.StatusOK, allHeaders)
 }
 ```
 
@@ -519,10 +546,10 @@ func GetSessionCookieHandler(c *xylium.Context) error {
 	c.Logger().Debugf("All cookies: %+v", allCookies)
 
 	if sessionID == "" {
-		return c.String(http.StatusUnauthorized, "No session ID cookie found.")
+		return c.String(xylium.StatusUnauthorized, "No session ID cookie found.")
 	}
 
-	return c.JSON(http.StatusOK, xylium.M{
+	return c.JSON(xylium.StatusOK, xylium.M{
 		"session_id": sessionID,
 		"theme":      themePreference,
 	})
@@ -531,50 +558,24 @@ func GetSessionCookieHandler(c *xylium.Context) error {
 
 ### 10.2. Setting Response Cookies
 
-Xylium provides methods to set cookies on the HTTP response. These methods add a `Set-Cookie` header.
-
-*   `c.SetCookie(cookie *fasthttp.Cookie)`: Sets a cookie using a `fasthttp.Cookie` object.
-*   `c.ClearCookie(name string)`: Clears a cookie by setting its expiration to the past.
-*   `xylium.NewxyliumCookie(name, value string) *xylium.xyliumCookie`: A helper to create a `fasthttp.Cookie` with some defaults (Path="/", HTTPOnly=true).
-*   `c.SetCustomCookie(customCookie *xylium.xyliumCookie)`: Sets a cookie using the `xyliumCookie` helper.
+Refer to `ResponseHandling.md` (Section 10.2) for detailed information and examples on how to set response cookies using `c.SetCookie()`, `c.ClearCookie()`, and Xylium's `NewXyliumCookie()` helper.
 
 ```go
-import (
-	"time"
-	"github.com/valyala/fasthttp"
-	// ... other imports
-)
+// Example snippet from ResponseHandling.md
+// import (
+// 	"time"
+// 	"github.com/valyala/fasthttp"
+// 	"github.com/arwahdevops/xylium-core/src/xylium"
+// )
 
-func SetAndClearCookiesHandler(c *xylium.Context) error {
-	// Set a simple cookie
-	simpleCookie := xylium.NewxyliumCookie("user_id", "12345")
-	// simpleCookie.Cookie is a fasthttp.Cookie, modify it further if needed
-	simpleCookie.SetMaxAge(3600) // Expires in 1 hour (MaxAge in seconds)
-	simpleCookie.SetSecure(true) // Only send over HTTPS (if applicable)
-	// CookieHTTPOnly is true by default from NewxyliumCookie
-	c.SetCustomCookie(simpleCookie)
-
-	// Set another cookie directly using fasthttp.Cookie
-	advCookie := fasthttp.AcquireCookie()
-	defer fasthttp.ReleaseCookie(advCookie) // Good practice
-	advCookie.SetKey("pref_lang")
-	advCookie.SetValue("en-US")
-	advCookie.SetPath("/prefs")
-	advCookie.SetExpire(time.Now().Add(24 * time.Hour * 30)) // Expires in 30 days
-	advCookie.SetSameSite(fasthttp.CookieSameSiteLaxMode)
-	c.SetCookie(advCookie)
-
-	// Clear a cookie (e.g., on logout)
-	if c.QueryParam("action") == "logout" {
-		c.ClearCookie("user_id") // Clears the user_id cookie set above
-		c.ClearCookie("session_token") // Example of clearing another cookie
-		return c.String(http.StatusOK, "Cookies cleared (simulated logout).")
-	}
-
-	return c.String(http.StatusOK, "Cookies have been set.")
-}
+// func SetAndClearCookiesHandler(c *xylium.Context) error {
+// 	simpleCookie := xylium.NewXyliumCookie("user_id", "12345")
+// 	simpleCookie.SetMaxAge(3600) 
+// 	c.SetCustomCookie(simpleCookie)
+// 	// ... more cookie logic ...
+// 	return c.String(xylium.StatusOK, "Cookies have been set.")
+// }
 ```
-Ensure the `Path` and `Domain` (if used) match when clearing a cookie.
 
 ## 11. Accessing Raw Request Body
 
@@ -587,16 +588,16 @@ func RawBodyHandler(c *xylium.Context) error {
 	rawBody := c.Body()
 
 	if len(rawBody) == 0 {
-		return c.String(http.StatusBadRequest, "Request body is empty.")
+		return c.String(xylium.StatusBadRequest, "Request body is empty.")
 	}
 
 	c.Logger().Infof("Received raw body (%d bytes): %s", len(rawBody), string(rawBody))
 	// Process the rawBody, e.g., parse a custom format, proxy it, etc.
 
-	return c.String(http.StatusOK, "Raw body received and logged.")
+	return c.String(xylium.StatusOK, "Raw body received and logged.")
 }
 ```
-If you are binding to structs (JSON, XML, Form), you generally don't need to call `c.Body()` directly, as the binding mechanism handles reading the body. If you call `c.Body()` before binding, the binding might fail or read an empty body if `fasthttp`'s body stream was already consumed (though `fasthttp` often buffers it). It's usually best to let `c.Bind()` handle body reading.
+If you are binding to structs (JSON, XML, Form), you generally don't need to call `c.Body()` directly, as the binding mechanism handles reading the body. If you call `c.Body()` *before* binding, the binding might fail or read an empty body if `fasthttp`'s body stream was already consumed (though `fasthttp` often buffers it). It's usually best to let `c.Bind()` handle body reading when applicable.
 
 ## 12. Getting Client IP Address
 
@@ -609,7 +610,7 @@ func ShowIPHandler(c *xylium.Context) error {
 	realClientIP := c.RealIP() // More reliable if behind trusted proxies
 
 	c.Logger().Infof("Direct IP: %s, Real Client IP: %s", directIP, realClientIP)
-	return c.JSON(http.StatusOK, xylium.M{
+	return c.JSON(xylium.StatusOK, xylium.M{
 		"connected_ip": directIP,
 		"client_ip":    realClientIP,
 	})

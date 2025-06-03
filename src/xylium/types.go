@@ -1,4 +1,3 @@
-// src/xylium/types.go
 package xylium
 
 import (

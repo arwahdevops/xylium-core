@@ -41,7 +41,6 @@ The most common way to handle request data is using `c.BindAndValidate(out inter
 package main
 
 import (
-	"net/http"
 	"github.com/arwahdevops/xylium-core/src/xylium"
 )
 
@@ -57,7 +56,7 @@ func CreateUserHandler(c *xylium.Context) error {
 	// BindAndValidate will try to bind based on Content-Type or method (e.g., JSON for POST, Query for GET)
 	// and then validate the 'input' struct.
 	if err := c.BindAndValidate(&input); err != nil {
-		// err will be *xylium.HTTPError, typically with status 400.
+		// err will be *xylium.HTTPError, typically with status xylium.StatusBadRequest.
 		// The GlobalErrorHandler will handle logging and sending the client response.
 		c.Logger().Warnf("Binding/validation failed for user creation: %v", err)
 		return err
@@ -66,31 +65,38 @@ func CreateUserHandler(c *xylium.Context) error {
 	// If we reach here, input is bound and validated.
 	// Process input...
 	c.Logger().Infof("User successfully bound and validated: %+v", input)
-	return c.JSON(http.StatusCreated, xylium.M{"message": "User created", "user": input})
+	return c.JSON(xylium.StatusCreated, xylium.M{"message": "User created", "user": input})
 }
 ```
 
-If binding or validation fails, `c.BindAndValidate()` returns a `*xylium.HTTPError`. This error typically has an HTTP status code of `400 Bad Request` and contains details about the failure.
+If binding or validation fails, `c.BindAndValidate()` returns a `*xylium.HTTPError`. This error typically has an HTTP status code of `xylium.StatusBadRequest` and contains details about the failure.
 
 ## 2. Binding Only: `c.Bind()`
 
 If you only need to bind data without immediate validation (perhaps validation is conditional or done later), you can use `c.Bind(out interface{}) error`.
 
 ```go
+// Assume MyProfileUpdate struct is defined elsewhere
+// type MyProfileUpdate struct {
+//	NewPassword string `json:"new_password"`
+//	// ... other fields without 'required' tags for partial updates
+// }
+
 func UpdateProfilePartialHandler(c *xylium.Context) error {
 	var partialData MyProfileUpdate // Assume MyProfileUpdate has no 'required' tags
 
 	if err := c.Bind(&partialData); err != nil { // Binding only
-		return err // Handle binding error
+		// err will be *xylium.HTTPError if binding itself fails (e.g., malformed JSON).
+		return err 
 	}
 
 	// Perform custom logic or conditional validation here...
 	if partialData.NewPassword != "" && len(partialData.NewPassword) < 8 {
-		return xylium.NewHTTPError(http.StatusBadRequest, "New password too short.")
+		return xylium.NewHTTPError(xylium.StatusBadRequest, "New password too short.")
 	}
 
 	// Update profile...
-	return c.String(http.StatusOK, "Profile update processed (partially).")
+	return c.String(xylium.StatusOK, "Profile update processed (partially).")
 }
 ```
 
@@ -103,8 +109,10 @@ Xylium's `c.Bind()` method (and by extension `c.BindAndValidate()`) uses a prior
 For maximum performance or highly specific binding requirements (e.g., parsing a custom binary format, using a faster JSON library), your struct can implement the `xylium.XBind` interface:
 
 ```go
-package xylium // In xylium's types
+package xylium // In xylium's types (src/xylium/context_binding.go)
 
+// XBind is an interface that can be implemented by types
+// to provide custom data binding logic.
 type XBind interface {
 	Bind(c *Context) error
 }
@@ -116,7 +124,7 @@ If the struct passed to `c.Bind()` (or `c.BindAndValidate()`) implements this in
 
 ```go
 // In your models package
-package models
+// package models
 
 import (
 	"encoding/json" // Or a faster JSON library like json-iterator
@@ -206,6 +214,8 @@ type MyData struct {
 ### `xml:"fieldName"`
 Used when binding from an XML request body (`application/xml`, `text/xml`).
 ```go
+// import "encoding/xml" // For xml.Name
+
 type Item struct {
 	XMLName xml.Name `xml:"item"`    // Root element for XML
 	ItemID  string   `xml:"id,attr"` // Attribute
@@ -251,6 +261,10 @@ type User struct {
 	Age      int      `json:"age"      form:"age"      query:"age"      validate:"omitempty,gte=18,lte=130"` // Optional, but if present, must be 18-130
 	Homepage string   `json:"homepage" form:"homepage" query:"homepage" validate:"omitempty,url"`
 	Tags     []string `json:"tags"     form:"tags"     query:"tags"     validate:"omitempty,dive,required,min=2"` // If tags slice exists, each element must be min 2 chars
+	Address  struct {
+		Street string `json:"street" validate:"required"`
+		City   string `json:"city" validate:"required"`
+	} `json:"address" validate:"required"` // Nested struct validation
 }
 ```
 Refer to the [go-playground/validator documentation](https://pkg.go.dev/github.com/go-playground/validator/v10) for a complete list of available tags and custom validation options.
@@ -258,10 +272,12 @@ Refer to the [go-playground/validator documentation](https://pkg.go.dev/github.c
 ### Handling Validation Errors
 
 When `c.BindAndValidate()` encounters validation errors, it returns a `*xylium.HTTPError` with:
-*   Status Code: `400 Bad Request`
+*   Status Code: `xylium.StatusBadRequest` (400)
 *   Message: A `xylium.M` (map) containing:
     *   `"message": "Validation failed."`
-    *   `"details": map[string]string` where keys are field names (or namespaces for nested structs, e.g., `Nested.InnerField`) and values are specific validation error messages (e.g., `"Username": "validation failed on tag 'required'"`).
+    *   `"details": map[string]string` where keys are field names (or namespaces for nested structs, e.g., `Address.Street`). Xylium's binder attempts to remove the top-level struct name prefix from the namespace provided by `validator.FieldError.Namespace()` to give a more client-friendly field path.
+        *   For a field `Username` in `struct User`, the key will be `Username`.
+        *   For a field `Street` in a nested `struct Address` (field name `Address` in `User`), the key will be `Address.Street`.
 
 **Example JSON Error Response for Validation Failure:**
 ```json
@@ -272,7 +288,7 @@ When `c.BindAndValidate()` encounters validation errors, it returns a `*xylium.H
         "details": {
             "Username": "validation failed on tag 'required'",
             "Email": "validation failed on tag 'email'",
-            "Nested.InnerField": "validation failed on tag 'min'" 
+            "Address.Street": "validation failed on tag 'required'" 
         }
     }
 }
@@ -300,7 +316,11 @@ func myCustomValidationFunc(fl validator.FieldLevel) bool {
 func main() {
 	customValidator := validator.New()
 	// Register custom validation functions if needed
-	_ = customValidator.RegisterValidation("must_be_xylium_rocks", myCustomValidationFunc)
+	err := customValidator.RegisterValidation("must_be_xylium_rocks", myCustomValidationFunc)
+	if err != nil {
+		// Handle registration error appropriately
+		panic("Failed to register custom validation: " + err.Error())
+	}
 
 	xylium.SetCustomValidator(customValidator) // Must be called before app initialization
 
@@ -328,7 +348,7 @@ func HandleCreatePost(c *xylium.Context) error {
 		return err // Let GlobalErrorHandler handle response
 	}
 	// ... process input ...
-	return c.JSON(http.StatusCreated, input)
+	return c.JSON(xylium.StatusCreated, input)
 }
 
 /*
@@ -358,7 +378,7 @@ func HandleListArticles(c *xylium.Context) error {
 		return err
 	}
 	// ... process queryParams ...
-	return c.JSON(http.StatusOK, xylium.M{"filters_applied": queryParams, "data": "placeholder_articles"})
+	return c.JSON(xylium.StatusOK, xylium.M{"filters_applied": queryParams, "data": "placeholder_articles"})
 }
 
 /*
