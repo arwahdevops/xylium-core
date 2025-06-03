@@ -31,7 +31,6 @@ Xylium provides methods on the `Router` (or `RouteGroup`) instance to register h
 package main
 
 import (
-	"net/http"
 	"github.com/arwahdevops/xylium-core/src/xylium"
 )
 
@@ -40,52 +39,52 @@ func main() {
 
 	// GET request
 	app.GET("/ping", func(c *xylium.Context) error {
-		return c.JSON(http.StatusOK, xylium.M{"message": "pong"})
+		return c.JSON(xylium.StatusOK, xylium.M{"message": "pong"})
 	})
 
 	// POST request
 	app.POST("/users", func(c *xylium.Context) error {
 		// ... logic to create a user ...
-		return c.JSON(http.StatusCreated, xylium.M{"message": "User created"})
+		return c.JSON(xylium.StatusCreated, xylium.M{"message": "User created"})
 	})
 
 	// PUT request
 	app.PUT("/users/:id", func(c *xylium.Context) error {
 		userID := c.Param("id")
 		// ... logic to update user with userID ...
-		return c.JSON(http.StatusOK, xylium.M{"message": "User " + userID + " updated"})
+		return c.JSON(xylium.StatusOK, xylium.M{"message": "User " + userID + " updated"})
 	})
 
 	// DELETE request
 	app.DELETE("/users/:id", func(c *xylium.Context) error {
 		userID := c.Param("id")
 		// ... logic to delete user with userID ...
-		return c.String(http.StatusOK, "User "+userID+" deleted")
+		return c.String(xylium.StatusOK, "User "+userID+" deleted")
 	})
 
 	// PATCH request
 	app.PATCH("/users/:id/profile", func(c *xylium.Context) error {
 		userID := c.Param("id")
 		// ... logic to partially update user's profile ...
-		return c.JSON(http.StatusOK, xylium.M{"message": "Profile for user " + userID + " patched"})
+		return c.JSON(xylium.StatusOK, xylium.M{"message": "Profile for user " + userID + " patched"})
 	})
 
 	// HEAD request
 	app.HEAD("/status", func(c *xylium.Context) error {
 		// Typically, set headers and no body for HEAD requests.
 		// Xylium handles not sending a body if Content-Length is 0 or not set,
-		// or if a "no content" status is used.
+		// or if a "no content" status like xylium.StatusNoContent is used.
 		c.SetHeader("X-App-Status", "healthy")
-		return c.NoContent(http.StatusOK) // Or c.Status(http.StatusOK).String("")
+		return c.NoContent(xylium.StatusOK) // Or c.Status(xylium.StatusOK).String("") if headers are enough
 	})
 
 	// OPTIONS request
 	app.OPTIONS("/resource", func(c *xylium.Context) error {
 		c.SetHeader("Allow", "GET, POST, OPTIONS") // Example: Indicate allowed methods
-		return c.NoContent(http.StatusNoContent)
+		return c.NoContent(xylium.StatusNoContent)
 	})
 
-	app.Start(":8080")
+	// app.Start(":8080") // Assuming this is defined for a runnable example
 }
 ```
 Each method registration takes a path string, a `xylium.HandlerFunc`, and optional route-specific middleware.
@@ -100,13 +99,17 @@ Named parameters are defined by prefixing a path segment with a colon (`:`).
 Example: `/users/:id`, `/books/:category/:bookId`
 
 ```go
+// func GetUserHandler(c *xylium.Context) error { /* ... */ return nil }
+// func GetOrderHandler(c *xylium.Context) error { /* ... */ return nil }
+// app := xylium.New() // Assuming app is initialized
+
 // Matches /users/123, /users/abc, etc.
 // 'id' will be "123" or "abc"
-app.GET("/users/:id", GetUserHandler)
+// app.GET("/users/:id", GetUserHandler)
 
 // Matches /orders/2023/inv-001
 // 'year' will be "2023", 'invoiceId' will be "inv-001"
-app.GET("/orders/:year/:invoiceId", GetOrderHandler)
+// app.GET("/orders/:year/:invoiceId", GetOrderHandler)
 ```
 
 ### 2.2. Reading Path Parameters
@@ -117,13 +120,13 @@ Inside your handler, you can access the values of named parameters using `c.Para
 func GetUserHandler(c *xylium.Context) error {
 	userID := c.Param("id") // "id" is the name from ":id"
 	// ... fetch user by userID ...
-	return c.String(http.StatusOK, "Fetching user with ID: %s", userID)
+	return c.String(xylium.StatusOK, "Fetching user with ID: %s", userID)
 }
 
 func GetOrderHandler(c *xylium.Context) error {
 	year := c.Param("year")
 	invoiceID := c.Param("invoiceId")
-	return c.JSON(http.StatusOK, xylium.M{
+	return c.JSON(xylium.StatusOK, xylium.M{
 		"message":    "Fetching order details",
 		"year":       year,
 		"invoice_id": invoiceID,
@@ -139,14 +142,16 @@ Catch-all parameters capture all path segments from their position to the end of
 Example: `/static/*filepath`
 
 ```go
-// Matches /static/css/style.css -> filepath = "css/style.css"
-// Matches /static/images/logo.png -> filepath = "images/logo.png"
-// Matches /static/some/deep/path/file.js -> filepath = "some/deep/path/file.js"
-app.GET("/serve/*resourcepath", func(c *xylium.Context) error {
-	resourcePath := c.Param("resourcepath")
-	// ... logic to serve the file at resourcePath ...
-	return c.String(http.StatusOK, "Serving resource: %s", resourcePath)
-})
+// app := xylium.New() // Assuming app is initialized
+
+// Matches /serve/css/style.css -> resourcepath = "css/style.css"
+// Matches /serve/images/logo.png -> resourcepath = "images/logo.png"
+// Matches /serve/some/deep/path/file.js -> resourcepath = "some/deep/path/file.js"
+// app.GET("/serve/*resourcepath", func(c *xylium.Context) error {
+// 	resourcePath := c.Param("resourcepath")
+// 	// ... logic to serve the file at resourcePath ...
+// 	return c.String(xylium.StatusOK, "Serving resource: %s", resourcePath)
+// })
 ```
 This is commonly used for serving static files or proxying requests.
 
@@ -159,12 +164,18 @@ Route grouping allows you to organize routes under a common path prefix and appl
 Use `app.Group(prefix string, groupMiddleware ...xylium.Middleware)` to create a new group.
 
 ```go
-apiV1 := app.Group("/api/v1")
-{ // Braces are optional but improve readability
-	apiV1.GET("/users", ListUsersHandler)    // Path: /api/v1/users
-	apiV1.POST("/users", CreateUserHandler)  // Path: /api/v1/users
-	apiV1.GET("/products", ListProducts) // Path: /api/v1/products
-}
+// Placeholder handlers
+// func ListUsersHandler(c *xylium.Context) error   { return c.String(xylium.StatusOK, "List Users") }
+// func CreateUserHandler(c *xylium.Context) error  { return c.String(xylium.StatusCreated, "Create User") }
+// func ListProductsHandler(c *xylium.Context) error { return c.String(xylium.StatusOK, "List Products") } // Renamed for clarity
+// app := xylium.New() // Assuming app is initialized
+
+// apiV1 := app.Group("/api/v1")
+// { // Braces are optional but improve readability
+// 	apiV1.GET("/users", ListUsersHandler)    // Path: /api/v1/users
+// 	apiV1.POST("/users", CreateUserHandler)  // Path: /api/v1/users
+// 	apiV1.GET("/products", ListProductsHandler) // Path: /api/v1/products
+// }
 ```
 
 ### 4.2. Nested Groups
@@ -172,18 +183,25 @@ apiV1 := app.Group("/api/v1")
 Groups can be nested to create more complex path structures.
 
 ```go
-adminGroup := app.Group("/admin")
-{
-	adminGroup.GET("/dashboard", AdminDashboardHandler) // /admin/dashboard
+// Placeholder handlers
+// func AdminDashboardHandler(c *xylium.Context) error { return c.String(xylium.StatusOK, "Admin Dashboard") }
+// func AdminListUsersHandler(c *xylium.Context) error { return c.String(xylium.StatusOK, "Admin List Users") }
+// func AdminGetUserHandler(c *xylium.Context) error   { userID := c.Param("id"); return c.String(xylium.StatusOK, "Admin Get User "+userID) }
+// func AdminBanUserHandler(c *xylium.Context) error   { userID := c.Param("id"); return c.String(xylium.StatusOK, "Admin Ban User "+userID) }
+// app := xylium.New() // Assuming app is initialized
 
-	// Nested group for user management within admin
-	userManagementGroup := adminGroup.Group("/users")
-	{
-		userManagementGroup.GET("/", AdminListUsersHandler)         // /admin/users
-		userManagementGroup.GET("/:id", AdminGetUserHandler)       // /admin/users/:id
-		userManagementGroup.POST("/:id/ban", AdminBanUserHandler)  // /admin/users/:id/ban
-	}
-}
+// adminGroup := app.Group("/admin")
+// {
+// 	adminGroup.GET("/dashboard", AdminDashboardHandler) // /admin/dashboard
+
+// 	// Nested group for user management within admin
+// 	userManagementGroup := adminGroup.Group("/users")
+// 	{
+// 		userManagementGroup.GET("/", AdminListUsersHandler)         // /admin/users
+// 		userManagementGroup.GET("/:id", AdminGetUserHandler)       // /admin/users/:id
+// 		userManagementGroup.POST("/:id/ban", AdminBanUserHandler)  // /admin/users/:id/ban
+// 	}
+// }
 ```
 
 ### 4.3. Group Middleware
@@ -196,17 +214,19 @@ func ExampleAuthMiddleware(next xylium.HandlerFunc) xylium.HandlerFunc {
 	return func(c *xylium.Context) error {
 		c.Logger().Info("Auth Middleware called for group")
 		// ... authentication logic ...
-		// if !authenticated { return c.Status(http.StatusUnauthorized).String("Unauthorized") }
+		// if !authenticated { return c.Status(xylium.StatusUnauthorized).String("Unauthorized") }
 		return next(c)
 	}
 }
+// func AdminSettingsHandler(c *xylium.Context) error { return c.String(xylium.StatusOK, "Admin Settings") }
+// app := xylium.New() // Assuming app is initialized
 
 // Apply AuthMiddleware to the /admin group and all its routes
-adminSecureGroup := app.Group("/admin", ExampleAuthMiddleware)
-{
-	adminSecureGroup.GET("/settings", AdminSettingsHandler) // AuthMiddleware runs first
-	// More admin routes...
-}
+// adminSecureGroup := app.Group("/admin", ExampleAuthMiddleware)
+// {
+// 	adminSecureGroup.GET("/settings", AdminSettingsHandler) // AuthMiddleware runs first
+// 	// More admin routes...
+// }
 ```
 Route-specific middleware can also be added to routes within a group, and they will run after the group's middleware.
 
@@ -217,9 +237,11 @@ Route-specific middleware can also be added to routes within a group, and they w
 Xylium provides `app.ServeFiles(urlPathPrefix string, fileSystemRoot string)` to serve static files from a directory.
 
 ```go
+// app := xylium.New() // Assuming app is initialized
+
 // Serve files from the "./public_assets" directory under the "/static" URL prefix.
 // e.g., request to "/static/css/main.css" will serve "./public_assets/css/main.css"
-app.ServeFiles("/static", "./public_assets")
+// app.ServeFiles("/static", "./public_assets")
 
 // To serve from the root URL path:
 // app.ServeFiles("/", "./public_html") // Caution: Ensure no route conflicts with other handlers.
@@ -229,7 +251,7 @@ app.ServeFiles("/static", "./public_assets")
 *   Setting appropriate `Content-Type` headers based on file extension.
 *   Byte range requests (`Accept-Ranges` header).
 *   Compression (if `fasthttp.FS.Compress` is enabled, which it is by default in Xylium's `ServeFiles` usage).
-*   A custom `PathNotFound` handler that returns a JSON 404 error if a file is not found within the `fileSystemRoot`. This ensures API-like error responses even for static assets.
+*   A custom `PathNotFound` handler that returns a JSON `xylium.StatusNotFound` error if a file is not found within the `fileSystemRoot`. This ensures API-like error responses even for static assets.
 
 Refer to `router.go` (`Router.ServeFiles` implementation) for details on the custom `PathNotFound` handler.
 
@@ -238,53 +260,67 @@ Refer to `router.go` (`Router.ServeFiles` implementation) for details on the cus
 To serve a single specific file, like a `favicon.ico` or `robots.txt`, you can define a regular route and use `c.File(filepathToServe string)` from `ResponseHandling.md`.
 
 ```go
-// Serve favicon.ico from the root
-app.GET("/favicon.ico", func(c *xylium.Context) error {
-	return c.File("./static_files/favicon.ico") // Path to your favicon file
-})
+// app := xylium.New() // Assuming app is initialized
 
-app.GET("/robots.txt", func(c *xylium.Context) error {
-	return c.File("./static_files/robots.txt")
-})
+// Serve favicon.ico from the root
+// app.GET("/favicon.ico", func(c *xylium.Context) error {
+// 	return c.File("./static_files/favicon.ico") // Path to your favicon file
+// })
+
+// app.GET("/robots.txt", func(c *xylium.Context) error {
+// 	return c.File("./static_files/robots.txt")
+// })
 ```
 `c.File()` also uses `fasthttp.ServeFile` for efficient serving and proper header management.
 
 ## 6. Custom Not Found (404) Handler (`Router.NotFoundHandler`)
 
-When no route matches the requested path, Xylium invokes the `Router.NotFoundHandler`. You can replace the default 404 handler to provide custom responses.
+When no route matches the requested path, Xylium invokes the `Router.NotFoundHandler`. You can replace the default 404 handler to provide custom responses. The default handler returns a `*xylium.HTTPError` with status `xylium.StatusNotFound`.
 
 ```go
-app.NotFoundHandler = func(c *xylium.Context) error {
-	c.Logger().Warnf("Custom 404: Path '%s' not found by client '%s'.", c.Path(), c.RealIP())
-	// You can render an HTML 404 page or return a custom JSON response
-	return c.Status(http.StatusNotFound).JSON(xylium.M{
-		"error_code": "RESOURCE_NOT_FOUND",
-		"message":    "The page or resource you are looking for does not exist.",
-		"path":       c.Path(),
-	})
-}
+// app := xylium.New() // Assuming app is initialized
+
+// app.NotFoundHandler = func(c *xylium.Context) error {
+// 	c.Logger().Warnf("Custom 404: Path '%s' not found by client '%s'.", c.Path(), c.RealIP())
+// 	// You can render an HTML 404 page or return a custom JSON response
+// 	return c.Status(xylium.StatusNotFound).JSON(xylium.M{ // Explicitly set status, though NewHTTPError would also work
+// 		"error_code": "RESOURCE_NOT_FOUND",
+// 		"message":    "The page or resource you are looking for does not exist.",
+// 		"path":       c.Path(),
+// 	})
+// }
 ```
-This handler should be set on the `app` instance *before* starting the server. The `defaultNotFoundHandler` (see `router_defaults.go`) returns a `*xylium.HTTPError` which is then processed by the `GlobalErrorHandler`. Your custom handler should also typically return an error (often `*xylium.HTTPError`) or send a complete response.
+This handler should be set on the `app` instance *before* starting the server. Your custom handler should typically return an error (often a `*xylium.HTTPError` created with `xylium.NewHTTPError`) or send a complete response itself. If it returns an error, that error will be processed by the `GlobalErrorHandler`.
 
 ## 7. Custom Method Not Allowed (405) Handler (`Router.MethodNotAllowedHandler`)
 
-If a route path exists but not for the HTTP method used in the request, Xylium invokes `Router.MethodNotAllowedHandler`. The `Allow` header, listing permitted methods for the path, is automatically set by the router before calling this handler.
+If a route path exists but not for the HTTP method used in the request, Xylium invokes `Router.MethodNotAllowedHandler`. The `Allow` header, listing permitted methods for the path, is automatically set by the router before calling this handler. The default handler returns a `*xylium.HTTPError` with status `xylium.StatusMethodNotAllowed`.
 
 ```go
-app.MethodNotAllowedHandler = func(c *xylium.Context) error {
-	allowedMethods := c.Header("Allow") // Router sets this based on tree.Find results
-	c.Logger().Warnf("Custom 405: Method '%s' not allowed for path '%s'. Allowed: [%s]. Client: '%s'",
-		c.Method(), c.Path(), allowedMethods, c.RealIP())
+// import "strings" // For strings.Split if parsing Allow header
+// app := xylium.New() // Assuming app is initialized
 
-	return c.Status(http.StatusMethodNotAllowed).JSON(xylium.M{
-		"error_code":     "METHOD_NOT_SUPPORTED",
-		"message":        "The request method is not supported for this resource.",
-		"requested_method": c.Method(),
-		"allowed_methods":  strings.Split(allowedMethods, ", "), // Convert to slice for JSON
-	})
-}
+// app.MethodNotAllowedHandler = func(c *xylium.Context) error {
+// 	allowedMethodsHeader := c.Header("Allow") // Router sets this based on tree.Find results
+// 	c.Logger().Warnf("Custom 405: Method '%s' not allowed for path '%s'. Allowed: [%s]. Client: '%s'",
+// 		c.Method(), c.Path(), allowedMethodsHeader, c.RealIP())
+
+// 	// Parse allowedMethodsHeader for JSON response if needed
+// 	var allowedMethodsList []string
+// 	if allowedMethodsHeader != "" {
+// 		allowedMethodsList = strings.Split(allowedMethodsHeader, ", ")
+// 	}
+
+
+// 	return c.Status(xylium.StatusMethodNotAllowed).JSON(xylium.M{
+// 		"error_code":     "METHOD_NOT_SUPPORTED",
+// 		"message":        "The request method is not supported for this resource.",
+// 		"requested_method": c.Method(),
+// 		"allowed_methods":  allowedMethodsList,
+// 	})
+// }
 ```
-Like `NotFoundHandler`, this should be set on the `app` instance. The `defaultMethodNotAllowedHandler` also returns a `*xylium.HTTPError`.
+Like `NotFoundHandler`, this should be set on the `app` instance. If your custom handler returns an error, it will be processed by `GlobalErrorHandler`.
 
 ## 8. Route Matching Order
 

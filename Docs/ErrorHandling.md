@@ -39,28 +39,35 @@ In Xylium, route handlers and middleware have the signature `func(c *xylium.Cont
 ```go
 import (
 	"errors"
-	"net/http"
 	"github.com/arwahdevops/xylium-core/src/xylium"
 )
 
+// Assume ErrItemNotFound is a defined error in your application
+var ErrItemNotFound = errors.New("item not found in service")
+
 func GetItemHandler(c *xylium.Context) error {
 	itemID := c.Param("id")
-	item, err := findItemByID(itemID) // Assume this service function returns (Item, error)
+	// item, err := findItemByID(itemID) // Assume this service function returns (Item, error)
+	// For demonstration:
+	var err error
+	if itemID != "123" {
+		err = ErrItemNotFound
+	}
 	
 	if err != nil {
-		if errors.Is(err, ErrItemNotFound) { // Assuming ErrItemNotFound is a defined error
+		if errors.Is(err, ErrItemNotFound) {
 			// Return a specific HTTPError for "Not Found"
-			return xylium.NewHTTPError(http.StatusNotFound, "Item with ID "+itemID+" not found.")
+			return xylium.NewHTTPError(xylium.StatusNotFound, "Item with ID "+itemID+" not found.")
 		}
 		// For other unexpected errors from the service
 		c.Logger().Errorf("Error fetching item %s: %v", itemID, err)
 		// Return the original error; GlobalErrorHandler will likely treat it as a 500.
 		// Or, wrap it in an HTTPError with more context:
-		// return xylium.NewHTTPError(http.StatusInternalServerError, "Failed to retrieve item.").WithInternal(err)
+		// return xylium.NewHTTPError(xylium.StatusInternalServerError, "Failed to retrieve item.").WithInternal(err)
 		return err 
 	}
 
-	return c.JSON(http.StatusOK, item)
+	return c.JSON(xylium.StatusOK, xylium.M{"item_id": itemID, "data": "Sample Item Data"})
 }
 ```
 
@@ -88,50 +95,50 @@ Use the `xylium.NewHTTPError(code int, message ...interface{}) *HTTPError` funct
 
 #### Simple String Message
 ```go
-if productNotFound {
+// if productNotFound {
     // Returns a 404 with a JSON body like: {"error": "Product not found."}
-    return xylium.NewHTTPError(http.StatusNotFound, "Product not found.")
-}
+    // return xylium.NewHTTPError(xylium.StatusNotFound, "Product not found.")
+// }
 ```
 
 #### Default Message from Status Code
 If you omit the message, Xylium uses the standard HTTP status text.
 ```go
-if resourceIsGone {
+// if resourceIsGone {
     // Returns a 410 with a JSON body like: {"error": "Gone"}
-    return xylium.NewHTTPError(http.StatusGone) 
-}
+    // return xylium.NewHTTPError(xylium.StatusGone) 
+// }
 ```
 
 #### Structured Message (using `xylium.M`)
 Provide more detailed error information to the client.
 ```go
-if validationFailed {
+// if validationFailed {
     details := xylium.M{
         "field": "email",
         "issue": "Email address is already registered.",
     }
     // Returns a 409 with a JSON body like:
     // { "error": { "message": "User registration failed", "details": { "field": "email", ... } } }
-    return xylium.NewHTTPError(http.StatusConflict, xylium.M{
-        "message": "User registration failed",
-        "details": details,
-    })
-}
+    // return xylium.NewHTTPError(xylium.StatusConflict, xylium.M{
+    //     "message": "User registration failed",
+    //     "details": details,
+    // })
+// }
 // Alternatively, if the entire message IS the structured part:
-// return xylium.NewHTTPError(http.StatusBadRequest, xylium.M{"code": "VALIDATION_ERROR", "field_errors": details})
+// return xylium.NewHTTPError(xylium.StatusBadRequest, xylium.M{"code": "VALIDATION_ERROR", "field_errors": details})
 ```
 
 #### Including an Internal Error (`WithInternal`)
 Crucial for logging internal error details without exposing them to the client (unless in `DebugMode`).
 ```go
-dbResult, dbErr := queryDatabaseForUser(userID)
-if dbErr != nil {
+// dbResult, dbErr := queryDatabaseForUser(userID)
+// if dbErr != nil {
     // Generic message for the client
     clientMessage := "An error occurred while accessing user data."
     // The original dbErr is wrapped as an internal error for logging
-    return xylium.NewHTTPError(http.StatusInternalServerError, clientMessage).WithInternal(dbErr)
-}
+    // return xylium.NewHTTPError(xylium.StatusInternalServerError, clientMessage).WithInternal(dbErr)
+// }
 ```
 *   **In `ReleaseMode`**, the client sees:
     ```json
@@ -154,41 +161,41 @@ if dbErr != nil {
 `NewHTTPError` can intelligently wrap existing errors:
 ```go
 // Scenario 1: Wrapping a generic Go error
-err := someServiceCall()
-if err != nil {
+// err := someServiceCall()
+// if err != nil {
     // Make this a 400 Bad Request. err.Error() becomes the Message, err becomes Internal.
-    return xylium.NewHTTPError(http.StatusBadRequest, err) 
-}
+    // return xylium.NewHTTPError(xylium.StatusBadRequest, err) 
+// }
 
 // Scenario 2: Wrapping an existing HTTPError to change its code
-originalHttpErr := xylium.NewHTTPError(http.StatusForbidden, "Access denied.")
-if someCondition {
+// originalHttpErr := xylium.NewHTTPError(xylium.StatusForbidden, "Access denied.")
+// if someCondition {
     // Change to 503, keeping original message and internal error (if any)
-    return xylium.NewHTTPError(http.StatusServiceUnavailable, originalHttpErr)
-}
+    // return xylium.NewHTTPError(xylium.StatusServiceUnavailable, originalHttpErr)
+// }
 ```
 
 ### 2.3. Modifying an `HTTPError`'s Message (`WithMessage`)
 You can change the `Message` of an existing `HTTPError`:
 ```go
-err := xylium.NewHTTPError(http.StatusPaymentRequired, "Premium feature access required.")
-// ... some logic ...
-if user.IsTrialExpired() {
-    err = err.WithMessage("Your trial has expired. Please upgrade to access this feature.")
-}
-return err
+// err := xylium.NewHTTPError(xylium.StatusPaymentRequired, "Premium feature access required.")
+// // ... some logic ...
+// if user.IsTrialExpired() {
+//     err = err.WithMessage("Your trial has expired. Please upgrade to access this feature.")
+// }
+// return err
 ```
 
 ### 2.4. Checking for `HTTPError` (`IsHTTPError`)
 Use `xylium.IsHTTPError(err error, code ...int) bool` to check if an error is an `*xylium.HTTPError` and optionally if it matches a specific status code.
 ```go
-err := someFunctionThatMightReturnHttpError()
-if xylium.IsHTTPError(err, http.StatusNotFound) {
-    // Handle "Not Found" specifically
-} else if he, ok := err.(*xylium.HTTPError); ok {
-    // It's some other HTTPError
-    log.Printf("HTTP Error with code %d occurred.", he.Code)
-}
+// err := someFunctionThatMightReturnHttpError()
+// if xylium.IsHTTPError(err, xylium.StatusNotFound) {
+//     // Handle "Not Found" specifically
+// } else if he, ok := err.(*xylium.HTTPError); ok {
+//     // It's some other HTTPError
+//     // log.Printf("HTTP Error with code %d occurred.", he.Code) // Using standard log for example
+// }
 ```
 
 ## 3. Global Error Handler (`Router.GlobalErrorHandler`)
@@ -196,56 +203,58 @@ if xylium.IsHTTPError(err, http.StatusNotFound) {
 All non-nil errors returned from handlers or middleware (and errors returned by the `PanicHandler`) are ultimately processed by `Router.GlobalErrorHandler`. Its signature is `func(c *xylium.Context) error`.
 
 ### 3.1. Default Behavior
-Xylium provides a `defaultGlobalErrorHandler` that:
-1.  Retrieves the original error from `c.Get(xylium.ContextKeyErrorCause)`. (Assuming `ContextKeyErrorCause` is a defined constant like `ContextKeyRequestID`).
+Xylium provides a `defaultGlobalErrorHandler` (in `router_defaults.go`) that:
+1.  Retrieves the original error from `c.Get(xylium.ContextKeyErrorCause)`.
 2.  Uses `c.Logger()` for contextual logging.
 3.  Differentiates between `*xylium.HTTPError` and generic Go errors.
 4.  Sends a JSON response to the client:
-    *   For `*xylium.HTTPError`: Uses its `Code` and `Message`. In `DebugMode`, `Internal.Error()` is added to `_debug_info` if `Internal` is not nil.
+    *   For `*xylium.HTTPError`: Uses its `Code` and `Message`. In `DebugMode`, `Internal.Error()` is added to `_debug_info` if `Internal` is not nil and not redundant with `Message`.
     *   For generic Go errors: Sends HTTP 500. In `DebugMode`, `originalErr.Error()` is added to `_debug_info`.
 
 ### 3.2. Customizing the Global Error Handler
 You can replace the default handler:
 ```go
 // In main.go or your app setup
-app := xylium.New() // or NewWithConfig
+// app := xylium.New() // or NewWithConfig
 
-app.GlobalErrorHandler = func(c *xylium.Context) error {
-    errVal, _ := c.Get(xylium.ContextKeyErrorCause) // Use defined constant
-    originalErr, _ := errVal.(error)
-    logger := c.Logger() // Contextual logger
+// app.GlobalErrorHandler = func(c *xylium.Context) error {
+//     // Retrieve the error using the defined context key
+//     errVal, _ := c.Get(xylium.ContextKeyErrorCause)
+//     originalErr, _ := errVal.(error)
+//     logger := c.Logger() // Contextual logger
 
-    var httpCode int = http.StatusInternalServerError
-    var clientResponse interface{}
+//     var httpCode int = xylium.StatusInternalServerError // Default to 500
+//     var clientResponse interface{}
 
-    if he, ok := originalErr.(*xylium.HTTPError); ok {
-        httpCode = he.Code
-        clientResponse = he.Message // This could be string or xylium.M
+//     if he, ok := originalErr.(*xylium.HTTPError); ok {
+//         httpCode = he.Code
+//         clientResponse = he.Message // This could be string or xylium.M
         
-        logFields := xylium.M{"status": httpCode}
-        if he.Internal != nil {
-            logFields["internal_error"] = he.Internal.Error()
-        }
-        logger.WithFields(logFields).Errorf("CustomErrorHandler (HTTPError): %v", he.Message)
-    } else if originalErr != nil { // Generic error
-        clientResponse = xylium.M{"error_code": "UNEXPECTED_ERROR", "message": "An unexpected error occurred."}
-        if c.RouterMode() == xylium.DebugMode {
-             clientResponse.(xylium.M)["debug_details"] = originalErr.Error()
-        }
-        logger.WithFields(xylium.M{"status": httpCode}).Errorf("CustomErrorHandler (Generic Error): %v", originalErr)
-    } else {
-        // Should ideally not happen if errors are propagated correctly
-        clientResponse = xylium.M{"error": "Unknown error"}
-        logger.Warn("CustomErrorHandler: Called without a valid error cause.")
-    }
+//         logFields := xylium.M{"status": httpCode}
+//         if he.Internal != nil {
+//             logFields["internal_error"] = he.Internal.Error()
+//         }
+//         logger.WithFields(logFields).Errorf("CustomErrorHandler (HTTPError): %v", he.Message)
+//     } else if originalErr != nil { // Generic error
+//         clientResponse = xylium.M{"error_code": "UNEXPECTED_ERROR", "message": "An unexpected error occurred."}
+//         if c.RouterMode() == xylium.DebugMode {
+//              clientResponse.(xylium.M)["debug_details"] = originalErr.Error()
+//         }
+//         logger.WithFields(xylium.M{"status": httpCode}).Errorf("CustomErrorHandler (Generic Error): %v", originalErr)
+//     } else {
+//         // Should ideally not happen if errors are propagated correctly
+//         clientResponse = xylium.M{"error": "Unknown error"}
+//         logger.Warn("CustomErrorHandler: Called without a valid error cause.")
+//     }
 
-    // Ensure response is not already sent (e.g., by a middleware that short-circuited)
-    if !c.ResponseCommitted() {
-        return c.JSON(httpCode, clientResponse)
-    }
-    logger.Debug("CustomErrorHandler: Response already committed, cannot send error response.")
-    return nil // Response already sent
-}
+//     // Ensure response is not already sent (e.g., by a middleware that short-circuited)
+//     if !c.ResponseCommitted() {
+//         // Use Xylium's JSON response method
+//         return c.JSON(httpCode, clientResponse)
+//     }
+//     logger.Debug("CustomErrorHandler: Response already committed, cannot send error response.")
+//     return nil // Response already sent
+// }
 ```
 **Important**: Your custom error handler must always send a response or return an error if it fails to send one, to avoid hanging requests.
 
@@ -254,38 +263,42 @@ app.GlobalErrorHandler = func(c *xylium.Context) error {
 Xylium automatically recovers from panics that occur in handlers or middleware. After recovery, `Router.PanicHandler` is called. Its signature is `func(c *xylium.Context) error`.
 
 ### 4.1. Default Behavior
-Xylium's `defaultPanicHandler`:
-1.  Logs the panic. The stack trace is logged by the core Router logic before `PanicHandler` is invoked.
-2.  Sets `panic_recovery_info` (use a defined constant like `xylium.ContextKeyPanicInfo`) in the context.
-3.  Returns an `xylium.NewHTTPError` with status 500 and a generic message. The panic value is set as the `Internal` error.
+Xylium's `defaultPanicHandler` (in `router_defaults.go`):
+1.  Retrieves panic info from `c.Get(xylium.ContextKeyPanicInfo)`.
+2.  Logs the panic. The stack trace is logged by the core `Router.Handler` logic before `PanicHandler` is invoked.
+3.  Returns an `xylium.NewHTTPError` with status 500 and a generic message. The panic value (converted to an error) is set as the `Internal` error.
 4.  This `HTTPError` is then processed by the `GlobalErrorHandler`.
 
 ### 4.2. Customizing the Panic Handler
 ```go
-app.PanicHandler = func(c *xylium.Context) error {
-    panicInfo, _ := c.Get(xylium.ContextKeyPanicInfo) // Use defined constant
-    
-    // Example: Send notification to an external monitoring system
-    // alertService.NotifyPanic(fmt.Sprintf("Panic: %v", panicInfo), c.Path(), c.RealIP())
+// import "fmt" // For fmt.Sprintf
 
-    c.Logger().WithFields(xylium.M{"panic_value": panicInfo}).Criticalf("PANIC RECOVERED (Custom Handler)!")
+// app.PanicHandler = func(c *xylium.Context) error {
+//     // Retrieve panic info using the defined context key
+//     panicInfo, _ := c.Get(xylium.ContextKeyPanicInfo)
     
-    // Return an HTTPError that will be processed by GlobalErrorHandler
-    errorMessage := "We're experiencing technical difficulties. Our team has been notified."
-    if c.RouterMode() == xylium.DebugMode {
-        errorMessage = fmt.Sprintf("Panic: %v. See server logs for stack trace.", panicInfo)
-    }
-    return xylium.NewHTTPError(http.StatusInternalServerError, errorMessage).WithInternal(fmt.Errorf("panic: %v", panicInfo))
-}
+//     // Example: Send notification to an external monitoring system
+//     // alertService.NotifyPanic(fmt.Sprintf("Panic: %v", panicInfo), c.Path(), c.RealIP())
+
+//     c.Logger().WithFields(xylium.M{"panic_value": panicInfo}).Criticalf("PANIC RECOVERED (Custom Handler)!")
+    
+//     // Return an HTTPError that will be processed by GlobalErrorHandler
+//     errorMessage := "We're experiencing technical difficulties. Our team has been notified."
+//     if c.RouterMode() == xylium.DebugMode {
+//         errorMessage = fmt.Sprintf("Panic: %v. See server logs for stack trace.", panicInfo)
+//     }
+//     // Wrap panicInfo in an error for WithInternal
+//     return xylium.NewHTTPError(xylium.StatusInternalServerError, errorMessage).WithInternal(fmt.Errorf("panic: %v", panicInfo))
+// }
 ```
 
 ## 5. Errors from `c.BindAndValidate()`
 
 The `c.BindAndValidate(out interface{}) error` method returns a `*xylium.HTTPError` if binding or validation fails:
-*   **Binding Failure**: Typically results in a `400 Bad Request` (e.g., "Invalid JSON data provided.").
-*   **Validation Failure**: Results in a `400 Bad Request`. The `Message` field of the `HTTPError` will be a `xylium.M` containing `message: "Validation failed."` and `details: map[string]string` mapping field names to specific validation error messages.
+*   **Binding Failure**: Typically results in a `xylium.StatusBadRequest` (e.g., "Invalid JSON data provided.").
+*   **Validation Failure**: Results in a `xylium.StatusBadRequest`. The `Message` field of the `HTTPError` will be a `xylium.M` containing `message: "Validation failed."` and `details: map[string]string` mapping field names (potentially with struct path, e.g., `Nested.InnerField`) to specific validation error messages.
 
-**Example Response from `BindAndValidate` Validation Failure:**
+**Example JSON Response from `BindAndValidate` Validation Failure:**
 ```json
 // Status: 400 Bad Request
 {
@@ -293,23 +306,26 @@ The `c.BindAndValidate(out interface{}) error` method returns a `*xylium.HTTPErr
         "message": "Validation failed.",
         "details": {
             "Username": "validation failed on tag 'required'",
-            "Email": "validation failed on tag 'email'"
+            "Email": "validation failed on tag 'email'",
+            "Nested.InnerField": "validation failed on tag 'min'" 
         }
     }
 }
 ```
 You can directly return the error from `BindAndValidate` to be processed by the `GlobalErrorHandler`:
 ```go
-func CreateItemHandler(c *xylium.Context) error {
-    var input CreateItemInput
-    if err := c.BindAndValidate(&input); err != nil {
-        // No need to log here if GlobalErrorHandler does it.
-        // err is already *xylium.HTTPError.
-        return err 
-    }
-    // ... process input ...
-    return c.String(http.StatusCreated, "Item created")
-}
+// type CreateItemInput struct { /* ... fields with validate tags ... */ }
+
+// func CreateItemHandler(c *xylium.Context) error {
+//     var input CreateItemInput
+//     if err := c.BindAndValidate(&input); err != nil {
+//         // No need to log here if GlobalErrorHandler does it.
+//         // err is already *xylium.HTTPError.
+//         return err 
+//     }
+//     // ... process input ...
+//     return c.String(xylium.StatusCreated, "Item created")
+// }
 ```
 
 ## 6. Error Handling Flow Summary
@@ -322,13 +338,11 @@ func CreateItemHandler(c *xylium.Context) error {
     *   `Router.PanicHandler` is called.
     *   `PanicHandler` returns an `error` (typically an `HTTPError`). This error then flows as if it were returned by a normal handler.
 3.  **`Router.Handler`'s Error Processing**:
-    *   The error (from step 1 or 2) is set into `c.store` (e.g., `c.Set(xylium.ContextKeyErrorCause, err)`).
+    *   The error (from step 1 or 2) is set into `c.store` using `c.Set(xylium.ContextKeyErrorCause, err)`.
     *   `Router.GlobalErrorHandler` is called.
 4.  **`Router.GlobalErrorHandler`**:
-    *   Retrieves the error cause from context.
+    *   Retrieves the error cause from context using `c.Get(xylium.ContextKeyErrorCause)`.
     *   Logs the error.
     *   Formats and sends an HTTP response to the client (usually JSON).
 
-By understanding `HTTPError` and the error/panic handling flow, you can build robust Xylium applications that provide meaningful feedback to both developers (via logs) and users (via API responses). Remember to use defined constants (e.g., `xylium.ContextKeyErrorCause`, `xylium.ContextKeyPanicInfo`) for context keys for better maintainability.
-
----
+By understanding `HTTPError` and the error/panic handling flow, you can build robust Xylium applications that provide meaningful feedback to both developers (via logs) and users (via API responses). Always use the defined constants (e.g., `xylium.ContextKeyErrorCause`, `xylium.ContextKeyPanicInfo`) for context keys to ensure maintainability and consistency.
